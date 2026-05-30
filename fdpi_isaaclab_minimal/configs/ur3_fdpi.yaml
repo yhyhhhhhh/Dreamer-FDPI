@@ -1,0 +1,47 @@
+common:
+  task: Ur3Lite-HeadPipe-GraspGoalDreamerForce-OSC-RL-Direct-v2
+  ur3_extension_path: /home/yhy/surgical_robot_pro1/exts/ur3_lite
+  seed: 1
+  device: cuda:0
+  headless: true
+  enable_cameras: false
+  disable_fabric: false
+
+algorithm:
+  hidden_num: 2
+  hidden_dim: 256
+  lr: 0.0001
+  gamma: 0.99
+  cost_gamma: 0.97
+  tau: 0.005
+  max_grad_norm: 40.0
+  target_entropy:
+
+fdpi:
+  beta: 0.5
+  dual_thresh: 0.8
+  epsilon: 0.2
+  target_kl: 3.0
+
+cost:
+  cost_source: contact_force
+  pipe_force_cost_limit: 1.0
+  bottom_force_cost_limit: 1.0
+  continuous_contact_cost: false
+
+train:
+  num_envs: 64
+  total_steps: 2000000
+  start_steps: 50000
+  buffer_size: 1000000
+  batch_size: 512
+  sample_per_iteration: 1
+  updates_per_iteration: 16
+  log_every_steps: 10000
+  save_every_steps: 250000
+  max_checkpoints: 5
+  allow_missing_terminal_observation: true
+
+logging:
+  log_root: logs/fdpi_minimal
+  note: ur3_fdpi_min

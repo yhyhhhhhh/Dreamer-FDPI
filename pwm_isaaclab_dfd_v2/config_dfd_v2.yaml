@@ -1,0 +1,165 @@
+Task: "JointTrainAgent"
+
+BasicSettings:
+  Seed: 0
+  ObsShape: 0
+  UseAmp: True
+  FrameSkip: 1
+
+JointTrainAgent:
+  SampleMaxSteps: 10000000
+  BufferMaxLength: 10000000
+  BufferWarmUp: 51200
+  NumEnvs: 64
+  BatchSize: 64
+  BatchLength: 64
+  ImagineBatchSize: 64
+  ImagineContext: 16
+  ImagineHorizon: 15
+  TrainModelEverySteps: 256
+  TrainAgentEverySteps: 256
+  ModelUpdate: 4
+  AgentUpdate: 4
+  SaveEverySteps: 250000
+  VideoLogStep: 2000
+  SaveOfflineEpisodes: False
+  OfflineDatasetDir: ""
+
+Models:
+  Hidden: 320
+  NumBin: 255
+  MaxBin: 20
+  Act: "SiLU"
+  Stoch: 24
+  Discrete: 16
+  Gamma: 0.99
+  Lambda: 0.95
+  Tau: 0.01
+
+  WorldModel:
+    Stem: 32
+    MinRes: 4
+    DynScale: 0.75
+    RepScale: 0.15
+    ValScale: 1.25
+    KLFree: 1.0
+    LR: 8.0e-5
+    Eps: 1.0e-8
+
+  Agent:
+    EntropyCoef: 3.0e-4
+    MinStd: 0.1
+    MaxStd: 1.0
+    LR: 8.0e-5
+    Eps: 1.0e-5
+    MinPer: 0.05
+    MaxPer: 0.95
+    EMADecay: 0.99
+    UseSlowCritic: False
+
+ForceHead:
+  Enable: True
+  Key: ""
+  HiddenDim: 160
+  Depth: 3
+  Dropout: 0.1
+  SignedForce: False
+  Threshold: 0.25
+  LossWeight: 0.25
+  DetachLatent: False
+
+ForceLoss:
+  Eps: 1.0e-3
+  ForceScale: 0.5
+  LambdaCls: 1.5
+  LambdaReg: 2.0
+  LambdaSign: 0.5
+  FocalAlpha: 0.85
+  FocalGamma: 2.0
+  HuberBeta: 0.25
+  RegWeightPower: 0.5
+  RegWeightMax: 6.0
+
+Wandb:
+  Project: "IsaacLab-PSSM-DFD-V2"
+
+Env:
+  MakeKwargs:
+    num_envs: 64
+    use_fabric: True
+
+DFD_V2:
+  Replay:
+    world_model_max_dual_fraction: 0.10
+    cost_positive_ratio: 0.0
+
+  ContinuousCost:
+    Enable: true
+    ForceThreshold: 0.1
+    LowForceScale: 0.05
+    CostForceMax: 15.0
+    ExtremeForceThreshold: 5.0
+    ForceScale: 5.0
+    ClipCost: true
+    CostMin: 0.0
+    CostMax: 1.0
+    BottomForceChannels: [2, 5]
+
+  CostHead:
+    Enable: true
+    HiddenDim: 320
+    Depth: 3
+    LossWeight: 2.0
+    HuberBeta: 0.02
+    SmallForceThreshold: 0.3
+    SmallCostThreshold: 0.05
+    SmallCostWeight: 2.0
+    ExtremeLossWeight: 0.5
+    ExtremeCostWeight: 4.0
+    PriorLossWeight: 0.5
+
+  Gd:
+    Enable: true
+    GammaCost: 0.97
+    DoubleCritic: true
+    TargetTau: 0.005
+    RiskMax: 1.0
+    SourceAwareWeight: true
+    DualSourceWeight: 2.0
+    HighCostWeight: 3.0
+    HighCostThreshold: 0.1
+    HiddenDim: 256
+    NumLayers: 2
+    LR: 1.0e-4
+    Eps: 1.0e-8
+    UpdateSteps: 1
+
+  DualPolicy:
+    LR: 8.0e-5
+    Eps: 1.0e-5
+    InitFromMainActor: true
+
+  DualImagination:
+    Enable: true
+    StartStep: 100000
+    Horizon: 5
+    Objective: "max_risk"
+    KLCoeff: 1.0
+    MaxKLForSampling: 2.0
+    EntropyCoef: 1.0e-4
+    GradClipNorm: 100.0
+    UpdateSteps: 1
+
+  DualSampling:
+    Enable: true
+    StartStep: 120000
+    RatioStart: 0.01
+    RatioFinal: 0.1
+    RatioWarmupSteps: 100000
+    RequireKLHealthy: true
+
+  MainCostAwareReward:
+    Enable: true
+    StartStep: 150000
+    LambdaCost: 0.3
+    UsePredictedCost: true

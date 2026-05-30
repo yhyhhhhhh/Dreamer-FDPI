@@ -1,0 +1,144 @@
+# Task: "JointTrainAgent"
+
+# BasicSettings:
+#   Seed: 0
+#   ObsShape: 0
+#   UseAmp: True
+#   FrameSkip: 1
+
+# JointTrainAgent:
+#   SampleMaxSteps: 6000000
+#   BufferMaxLength: 6000000
+#   BufferWarmUp: 12800
+#   NumEnvs: 64
+#   BatchSize: 64
+#   BatchLength: 64
+#   ImagineBatchSize: 64
+#   ImagineContext: 64
+#   ImagineHorizon: 15
+#   TrainModelEverySteps: 256
+#   TrainAgentEverySteps: 256
+#   ModelUpdate: 2
+#   AgentUpdate: 1
+#   SaveEverySteps: 250000
+#   VideoLogStep: 2000
+#   SaveOfflineEpisodes: False
+#   OfflineDatasetDir: ""
+
+# Models:
+#   Hidden: 512
+#   NumBin: 255
+#   MaxBin: 20
+#   Act: "SiLU"
+#   Stoch: 32
+#   Discrete: 32
+#   Gamma: 0.997
+#   Lambda: 0.95
+#   Tau: 0.01
+
+#   WorldModel:
+#     Stem: 32
+#     MinRes: 4
+#     DynScale: 0.5
+#     RepScale: 0.1
+#     KLFree: 1.0
+#     LR: 1e-4
+#     Eps: 1e-8
+
+#   Agent:
+#     EntropyCoef: 3e-4
+#     MinStd: 0.1
+#     MaxStd: 1.0
+#     LR: 8e-5
+#     Eps: 1e-5
+#     MinPer: 0.05
+#     MaxPer: 0.95
+#     EMADecay: 0.99
+#     UseSlowCritic: True
+
+# Wandb:
+#   Project: "IsaacLab-PSSM"
+
+# Env:
+#   MakeKwargs:
+#     num_envs: 64
+#     use_fabric: True
+Task: "JointTrainAgent"
+
+BasicSettings:
+  Seed: 0
+  ObsShape: 0
+  UseAmp: True
+  FrameSkip: 1
+
+JointTrainAgent:
+  SampleMaxSteps: 10000000
+  BufferMaxLength: 4000000
+  BufferWarmUp: 51200
+  NumEnvs: 64
+  BatchSize: 64
+  BatchLength: 64
+  ImagineBatchSize: 64
+  ImagineContext: 16
+  ImagineHorizon: 15
+  TrainModelEverySteps: 256
+  TrainAgentEverySteps: 256
+  ModelUpdate: 4
+  AgentUpdate: 4
+  SaveEverySteps: 250000
+  VideoLogStep: 2000
+
+Models:
+  Hidden: 320
+  NumBin: 255
+  MaxBin: 20
+  Act: "SiLU"
+  Stoch: 24
+  Discrete: 16
+  Gamma: 0.99
+  Lambda: 0.95
+  Tau: 0.01
+
+  WorldModel:
+    Stem: 32
+    MinRes: 4
+    DynScale: 0.75
+    RepScale: 0.15
+    ValScale: 1.25
+    KLFree: 1.0
+    LR: 8e-5
+    Eps: 1e-8
+
+  Agent:
+    EntropyCoef: 3e-4
+    MinStd: 0.1
+    MaxStd: 1.0
+    LR: 8e-5
+    Eps: 1e-5
+    MinPer: 0.05
+    MaxPer: 0.95
+    EMADecay: 0.99
+    UseSlowCritic: False
+
+ForceHead:
+  Enable: True
+  Key: ""
+  HiddenDim: 160
+  Depth: 3
+  Dropout: 0.1
+  SignedForce: False
+  Threshold: 0.25
+  LossWeight: 0.25
+  DetachLatent: False
+
+ForceLoss:
+  Eps: 1e-3
+  ForceScale: 0.5
+  LambdaCls: 1.5
+  LambdaReg: 2.0
+  LambdaSign: 0.5
+  FocalAlpha: 0.85
+  FocalGamma: 2.0
+  HuberBeta: 0.25
+  RegWeightPower: 0.5
+  RegWeightMax: 6.0

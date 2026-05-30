@@ -1,0 +1,109 @@
+# Ignore everything by default; allow only source-like project files below.
+*
+
+# Let Git traverse directories so allow rules can match nested source files.
+!*/
+
+# Git metadata helpers.
+!.gitignore
+!.gitattributes
+
+# Source, configuration, and lightweight project documentation.
+!*.py
+!*.pyi
+!*.sh
+!*.bash
+!*.yaml
+!*.yml
+!*.json
+!*.toml
+!*.ini
+!*.cfg
+!*.md
+!*.rst
+!*.txt
+!requirements*.txt
+!pyproject.toml
+!setup.py
+!setup.cfg
+!Makefile
+!Dockerfile
+!LICENSE
+!LICENSE.*
+!README*
+
+# Local editor settings.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python caches and local environments.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Training checkpoints, experiment logs, and generated evaluation data.
+ckpt/
+**/ckpt/
+eval_expert_policy_world_model/
+**/eval_expert_policy_world_model/
+wandb/
+**/wandb/
+**/eval_world_model/
+**/offline_episodes/
+runs/
+outputs/
+logs/
+lightning_logs/
+tb_logs/
+tensorboard/
+
+# Model weights, datasets, replay buffers, and binary experiment artifacts.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.wandb
+*.tfevents*
+*.log
+
+# Large/generated media and result tables.
+*.gif
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.mp4
+*.avi
+*.mov
+*.csv
+*.parquet
+*.feather
+*.sqlite
+*.sqlite3
+
+# Archives and packaged outputs.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z

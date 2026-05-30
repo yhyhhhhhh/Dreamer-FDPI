@@ -1,0 +1,139 @@
+Task: "JointTrainAgent"
+
+BasicSettings:
+  Seed: 0
+  ObsShape: 0
+  UseAmp: True
+  FrameSkip: 1
+
+JointTrainAgent:
+  SampleMaxSteps: 10000000
+  BufferMaxLength: 10000000
+  BufferWarmUp: 51200
+  NumEnvs: 64
+  BatchSize: 64
+  BatchLength: 64
+  ImagineBatchSize: 64
+  ImagineContext: 16
+  ImagineHorizon: 15
+  TrainModelEverySteps: 256
+  TrainAgentEverySteps: 256
+  ModelUpdate: 4
+  AgentUpdate: 4
+  SaveEverySteps: 250000
+  VideoLogStep: 2000
+  SaveOfflineEpisodes: False
+  OfflineDatasetDir: ""
+
+Models:
+  Hidden: 320
+  NumBin: 255
+  MaxBin: 20
+  Act: "SiLU"
+  Stoch: 24
+  Discrete: 16
+  Gamma: 0.99
+  Lambda: 0.95
+  Tau: 0.01
+
+  WorldModel:
+    Stem: 32
+    MinRes: 4
+    DynScale: 0.75
+    RepScale: 0.15
+    ValScale: 1.25
+    KLFree: 1.0
+    LR: 8.0e-5
+    Eps: 1.0e-8
+
+  Agent:
+    EntropyCoef: 3.0e-4
+    MinStd: 0.1
+    MaxStd: 1.0
+    LR: 8.0e-5
+    Eps: 1.0e-5
+    MinPer: 0.05
+    MaxPer: 0.95
+    EMADecay: 0.99
+    UseSlowCritic: False
+
+ForceHead:
+  Enable: True
+  Key: ""
+  HiddenDim: 160
+  Depth: 3
+  Dropout: 0.1
+  SignedForce: False
+  Threshold: 0.25
+  LossWeight: 0.25
+  DetachLatent: False
+
+ForceLoss:
+  Eps: 1.0e-3
+  ForceScale: 0.5
+  LambdaCls: 1.5
+  LambdaReg: 2.0
+  LambdaSign: 0.5
+  FocalAlpha: 0.85
+  FocalGamma: 2.0
+  HuberBeta: 0.25
+  RegWeightPower: 0.5
+  RegWeightMax: 6.0
+
+Wandb:
+  Project: "IsaacLab-PSSM-DFD"
+
+Env:
+  MakeKwargs:
+    num_envs: 64
+    use_fabric: True
+
+DFD:
+  use_dual: true
+  train_feasibility: true
+  use_risk_conditioned_advantage: true
+
+  Replay:
+    world_model_max_dual_fraction: 0.15
+
+  Cost:
+    bottom_force_threshold: 0.2
+    bottom_force_channels: [2, 5]
+
+  Feasibility:
+    cost_gamma: 0.99
+    pf: 0.15
+    cg: 0.15
+    hidden_dim: 256
+    num_layers: 2
+    target_tau: 0.01
+    lr: 1.5e-4
+    eps: 1.0e-8
+    update_steps: 2
+
+  DualPolicy:
+    start_step: 75000
+    ratio_start: 0.02
+    ratio_final: 0.10
+    ratio_warmup_steps: 300000
+    target_kl: 2.0
+    max_kl_for_sampling: 25.0
+    lambda_kl_init: 1.0
+    lambda_lr: 5.0e-5
+    lr: 1.0e-4
+    eps: 1.0e-5
+    update_steps: 2
+    init_from_main_actor: true
+    gd_objective: "max"
+    dual_g_scale: 3.0
+
+  MainActorRisk:
+    start_step: 100000
+    lambda_cri_start: 0.0
+    lambda_cri_final: 0.03
+    lambda_inf_start: 0.0
+    lambda_inf_final: 0.08
+    lambda_warmup_steps: 100000
+    clip_safe_adv: true
+    safe_adv_min: -5.0
+    safe_adv_max: 5.0
