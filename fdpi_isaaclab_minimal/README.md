@@ -35,3 +35,4 @@ To use another IsaacLab task, pass `--task <TASK_ID>`. The task must return obse
 fields, or `obs["force"]`.
 
 Checkpoints and TensorBoard logs are written under `logs/fdpi_minimal/<task>/<run_name>/`.
+

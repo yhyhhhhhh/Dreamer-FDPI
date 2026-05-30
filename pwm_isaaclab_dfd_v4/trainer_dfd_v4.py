@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import os
-from collections import deque
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from .compat import colorama
+try:
+    import colorama
+except ImportError:  # pragma: no cover
+    class _EmptyColors:
+        CYAN = GREEN = YELLOW = RESET_ALL = ""
+
+    class _ColoramaFallback:
+        Fore = _EmptyColors()
+        Style = _EmptyColors()
+
+    colorama = _ColoramaFallback()
 
 try:
     from pwm_isaaclab.trainer import (
@@ -33,16 +42,16 @@ try:
 except ImportError:
     from modules.world_models import predict_force_from_outputs
 
-from pwm_isaaclab_dfd_v2.cost_utils import (
+from .cost_utils import (
     SOURCE_DUAL,
     SOURCE_MAIN,
     SOURCE_RANDOM,
     cfg_get,
     continuous_cost_from_force_prediction,
     extract_continuous_cost,
-    linear_warmup,
 )
-from .dual_imagination_v3 import update_dual_in_imagination_v3
+from .dual_update_v4 import update_dual_v4
+from .sampling_utils import FDPIRegimeStatsWindow, batch_composition, dual_ratio_from_fdpi_stats
 
 
 def _cfg_float(node, name, default):
@@ -57,86 +66,11 @@ def _cfg_bool(node, name, default=False):
     return bool(cfg_get(node, name, default))
 
 
-def _node(dfd_cfg, name):
-    return cfg_get(dfd_cfg, name, None)
+def _node(fdpi_cfg, name):
+    return cfg_get(fdpi_cfg, name, None)
 
 
-def _ratio(numerator, denominator, default=0.0):
-    denominator = float(denominator)
-    if denominator <= 0.0:
-        return float(default)
-    return float(numerator) / denominator
-
-
-class _RecentDualCoverage:
-    def __init__(self, window_steps):
-        self.window_steps = max(int(window_steps), 1)
-        self.rows = deque()
-        self.total = 0
-        self.boundary = 0
-        self.main_total = 0
-        self.main_cost = 0
-        self.done = 0
-        self.success = 0
-
-    def _add_row(self, row):
-        self.rows.append(row)
-        self.total += row["total"]
-        self.boundary += row["boundary"]
-        self.main_total += row["main_total"]
-        self.main_cost += row["main_cost"]
-        self.done += row["done"]
-        self.success += row["success"]
-        while self.total > self.window_steps and len(self.rows) > 1:
-            old = self.rows.popleft()
-            self.total -= old["total"]
-            self.boundary -= old["boundary"]
-            self.main_total -= old["main_total"]
-            self.main_cost -= old["main_cost"]
-            self.done -= old["done"]
-            self.success -= old["success"]
-
-    @torch.no_grad()
-    def append(
-        self,
-        *,
-        source,
-        continuous_cost,
-        binary_cost,
-        done,
-        episode_success,
-        boundary_min,
-        boundary_max,
-    ):
-        source = torch.as_tensor(source).reshape(-1)
-        continuous_cost = torch.as_tensor(continuous_cost).reshape(-1)
-        binary_cost = torch.as_tensor(binary_cost).reshape(-1)
-        done = torch.as_tensor(done, dtype=torch.bool, device=continuous_cost.device).reshape(-1)
-        episode_success = torch.as_tensor(episode_success, dtype=torch.bool, device=continuous_cost.device).reshape(-1)
-        boundary = (continuous_cost >= float(boundary_min)) & (continuous_cost <= float(boundary_max))
-        main_mask = source.to(device=continuous_cost.device, dtype=torch.int64) == SOURCE_MAIN
-        done_success = done & episode_success
-        row = {
-            "total": int(continuous_cost.numel()),
-            "boundary": int(boundary.sum().item()),
-            "main_total": int(main_mask.sum().item()),
-            "main_cost": int(((binary_cost > 0.5) & main_mask).sum().item()),
-            "done": int(done.sum().item()),
-            "success": int(done_success.sum().item()),
-        }
-        self._add_row(row)
-
-    def stats(self):
-        return {
-            "recent_steps": int(self.total),
-            "recent_boundary_ratio": _ratio(self.boundary, self.total),
-            "recent_main_cost_rate": _ratio(self.main_cost, self.main_total),
-            "recent_done_episodes": int(self.done),
-            "recent_success_rate": _ratio(self.success, self.done),
-        }
-
-
-def train_world_model_step_dfd_v3(batch, world_model, agent, logger, step):
+def train_world_model_step_dfd_v4(batch, world_model, agent, logger, step):
     if agent is not None:
         agent.eval()
     metrics = world_model.update(
@@ -165,15 +99,6 @@ def train_world_model_step_dfd_v3(batch, world_model, agent, logger, step):
         pred_cost = metrics.get("cost/pred_mean", metrics.get("cost/predicted_cost_mean"))
         if isinstance(pred_cost, (int, float)):
             logger.log("WorldModel/pred_cost_mean", pred_cost, step)
-        pred_cost_max = metrics.get("cost/pred_max")
-        if isinstance(pred_cost_max, (int, float)):
-            logger.log("WorldModel/pred_cost_max", pred_cost_max, step)
-        extreme_ratio = metrics.get("cost/extreme_ratio")
-        if isinstance(extreme_ratio, (int, float)):
-            logger.log("WorldModel/extreme_force_rate", extreme_ratio, step)
-        extreme_prob = metrics.get("cost/extreme_prob_mean")
-        if isinstance(extreme_prob, (int, float)):
-            logger.log("WorldModel/extreme_prob_mean", extreme_prob, step)
     return metrics
 
 
@@ -208,31 +133,29 @@ def _predict_imagined_cost(world_model, feat, cost_cfg):
     return torch.zeros(*feat.shape[:-1], 1, dtype=feat.dtype, device=feat.device)
 
 
-def _main_cost_reward_enabled(main_cfg, step):
-    return _cfg_bool(main_cfg, "Enable", False) and int(step) >= _cfg_int(main_cfg, "StartStep", 150000)
+def _main_fdpi_cfg(fdpi_cfg):
+    risk_cfg = _node(fdpi_cfg, "RiskCritic")
+    main_cfg = _node(fdpi_cfg, "MainFDPIRegime")
+    return {
+        "Pf": _cfg_float(risk_cfg, "Pf", 0.10),
+        "Cg": _cfg_float(risk_cfg, "Cg", 0.03),
+        "RiskMax": _cfg_float(risk_cfg, "RiskMax", 1.0),
+        "LambdaCri": _cfg_float(main_cfg, "LambdaCri", 0.02),
+        "LambdaInf": _cfg_float(main_cfg, "LambdaInf", 0.05),
+        "EntropyCoef": _cfg_float(main_cfg, "EntropyCoef", 1.0e-4),
+    }
 
 
-def _lambda_cost_from_cfg(main_cfg, step):
-    if not _main_cost_reward_enabled(main_cfg, step):
-        return 0.0
-    final_lambda = _cfg_float(main_cfg, "LambdaCost", 0.03)
-    start_lambda = _cfg_float(main_cfg, "LambdaStart", final_lambda)
-    warmup_steps = _cfg_int(main_cfg, "LambdaWarmupSteps", 0)
-    if warmup_steps <= 0:
-        return final_lambda
-    warmup_step = max(int(step) - _cfg_int(main_cfg, "StartStep", 150000), 0)
-    return linear_warmup(warmup_step, start_lambda, final_lambda, warmup_steps)
-
-
-def train_agent_step_dfd_v3(
+def train_agent_step_dfd_v4(
     samples,
     world_model,
     agent,
+    gp_critic,
     imagine_horizon,
     logger,
     step,
     *,
-    dfd_cfg=None,
+    fdpi_cfg=None,
 ):
     world_model.eval()
     feat, action, discount, reward, weight = world_model.imagine_data(
@@ -242,38 +165,31 @@ def train_agent_step_dfd_v3(
         logger,
         step,
     )
-    main_cfg = _node(dfd_cfg, "MainCostAwareReward")
-    cost_cfg = _node(dfd_cfg, "ContinuousCost")
-    lambda_cost = 0.0
-    used_safe_reward = False
-    train_reward = reward
-    if _main_cost_reward_enabled(main_cfg, step):
-        lambda_cost = _lambda_cost_from_cfg(main_cfg, step)
-        with torch.no_grad():
-            pred_cost = _predict_imagined_cost(world_model, feat[:, 1:], cost_cfg)
-            cost_penalty = float(lambda_cost) * pred_cost
-            train_reward = reward - cost_penalty
-            used_safe_reward = True
-        if logger is not None:
-            reward_delta = reward - train_reward
-            logger.log("Main/cost_aware_active", 1.0, step)
-            logger.log("Main/lambda_cost", lambda_cost, step)
-            logger.log("Main/predicted_cost_mean", pred_cost.detach().float().mean().item(), step)
-            logger.log("Main/predicted_cost_max", pred_cost.detach().float().max().item(), step)
-            logger.log("Main/cost_penalty_mean", cost_penalty.detach().float().mean().item(), step)
-            logger.log("Main/cost_penalty_max", cost_penalty.detach().float().max().item(), step)
-            logger.log("Main/safe_reward_delta", reward_delta.detach().float().mean().item(), step)
-            logger.log("Main/task_imagined_reward", reward.detach().float().mean().item(), step)
-            logger.log("Main/safe_imagined_reward", train_reward.detach().float().mean().item(), step)
-    elif logger is not None:
-        logger.log("Main/cost_aware_active", 0.0, step)
-        logger.log("Main/lambda_cost", 0.0, step)
-    agent.update(feat, action, discount, train_reward, weight, logger, step)
+    main_cfg = _node(fdpi_cfg, "MainFDPIRegime")
+    if (
+        _cfg_bool(main_cfg, "Enable", True)
+        and int(step) >= _cfg_int(main_cfg, "StartStep", 200000)
+        and gp_critic is not None
+    ):
+        info = agent.update_fdpi_regime(
+            feat,
+            action,
+            discount,
+            reward,
+            weight,
+            gp_critic,
+            _main_fdpi_cfg(fdpi_cfg),
+            logger=logger,
+            step=step,
+        )
+        info["used_fdpi_regime"] = True
+        return info
+    agent.update(feat, action, discount, reward, weight, logger, step)
+    if logger is not None:
+        logger.log("MainFDPI/enabled", 0.0, step)
     return {
-        "used_safe_reward": used_safe_reward,
-        "lambda_cost": lambda_cost,
+        "used_fdpi_regime": False,
         "task_reward_mean": float(reward.detach().float().mean().item()),
-        "train_reward_mean": float(train_reward.detach().float().mean().item()),
     }
 
 
@@ -281,6 +197,7 @@ def _sample_policy_action(
     *,
     feat,
     agent,
+    gp_critic,
     dual_policy,
     world_model,
     state,
@@ -292,6 +209,9 @@ def _sample_policy_action(
     main_action = agent.sample(feat, greedy=False)
     action = main_action
     source = torch.full((num_envs, 1), SOURCE_MAIN, dtype=torch.int64, device=device)
+    g_main = None
+    if gp_critic is not None:
+        g_main = gp_critic.risk_no_grad(feat, main_action).detach()
     if use_dual_sampling and dual_policy is not None and float(dual_ratio) > 0.0:
         dual_mask = torch.rand(num_envs, device=device) < float(dual_ratio)
         if dual_mask.any():
@@ -302,10 +222,10 @@ def _sample_policy_action(
             source[dual_mask] = SOURCE_DUAL
     env_action = action.detach().cpu().numpy()
     state = world_model.update_inference_state(state, action)
-    return env_action, action, source, state
+    return env_action, action, source, state, g_main
 
 
-def _log_replay_stats(replay_buffer, logger, step):
+def _log_replay_stats(replay_buffer, logger, step, *, high_cost_threshold=0.1, boundary_low=0.05, boundary_high=0.4):
     if not hasattr(replay_buffer, "source_stats"):
         return
     stats = replay_buffer.source_stats()
@@ -314,81 +234,27 @@ def _log_replay_stats(replay_buffer, logger, step):
     logger.log("Replay/source_dual_ratio", stats.get("dual", 0) / total, step)
     logger.log("Replay/source_random_ratio", stats.get("random", 0) / total, step)
     if hasattr(replay_buffer, "cost_stats"):
-        cost_stats = replay_buffer.cost_stats()
-        logger.log("Replay/cost_mean", cost_stats["cost_mean"], step)
-        logger.log("Replay/main_cost_mean", cost_stats["main_cost_mean"], step)
-        logger.log("Replay/dual_cost_mean", cost_stats["dual_cost_mean"], step)
-        logger.log("Replay/main_cost_rate", cost_stats["main_cost_rate"], step)
-        logger.log("Replay/dual_cost_rate", cost_stats["dual_cost_rate"], step)
-        logger.log("Replay/extreme_cost_rate", cost_stats["extreme_cost_rate"], step)
-        logger.log("Replay/main_extreme_rate", cost_stats["main_extreme_rate"], step)
-        logger.log("Replay/dual_extreme_rate", cost_stats["dual_extreme_rate"], step)
-        logger.log("Replay/force_excess_mean", cost_stats["force_excess_mean"], step)
-        logger.log("Replay/force_excess_max", cost_stats["force_excess_max"], step)
+        cost_stats = replay_buffer.cost_stats(
+            high_cost_threshold=high_cost_threshold,
+            boundary_low=boundary_low,
+            boundary_high=boundary_high,
+        )
+        for key, value in cost_stats.items():
+            logger.log(f"Replay/{key}", value, step)
 
 
-def _current_lambda_cost(dfd_cfg, step):
-    main_cfg = _node(dfd_cfg, "MainCostAwareReward")
-    return _lambda_cost_from_cfg(main_cfg, step)
-
-
-def _dual_sampling_gate_v3(
-    *,
-    env_steps,
-    enabled,
-    start_step,
-    model_updates,
-    min_model_updates,
-    agent_updates,
-    min_agent_updates,
-    require_kl_healthy,
-    last_dual_kl,
-    max_kl,
-    require_gd_ready,
-    gd_updates,
-    min_gd_updates,
-    last_gd_separation,
-    min_gd_separation,
-    require_coverage_need,
-    recent_main_cost_rate,
-    main_cost_rate_threshold,
-    recent_boundary_ratio,
-    boundary_ratio_threshold,
-):
-    step_ready = int(env_steps) >= int(start_step)
-    world_model_ready = int(model_updates) >= int(min_model_updates)
-    main_policy_ready = int(agent_updates) >= int(min_agent_updates)
-    kl_healthy = (not require_kl_healthy) or abs(float(last_dual_kl)) <= float(max_kl)
-    gd_ready = (not require_gd_ready) or (
-        int(gd_updates) >= int(min_gd_updates)
-        and float(last_gd_separation) >= float(min_gd_separation)
+def _log_batch_composition(logger, prefix, batch, step, *, high_cost_threshold, boundary_low, boundary_high):
+    stats = batch_composition(
+        batch,
+        high_cost_threshold=high_cost_threshold,
+        boundary_low=boundary_low,
+        boundary_high=boundary_high,
     )
-    low_main_cost = float(recent_main_cost_rate) < float(main_cost_rate_threshold)
-    low_boundary = float(recent_boundary_ratio) < float(boundary_ratio_threshold)
-    coverage_need = (not require_coverage_need) or low_main_cost or low_boundary
-    healthy = (
-        bool(enabled)
-        and step_ready
-        and world_model_ready
-        and main_policy_ready
-        and kl_healthy
-        and gd_ready
-        and coverage_need
-    )
-    return {
-        "healthy": healthy,
-        "step_ready": step_ready,
-        "world_model_ready": world_model_ready,
-        "main_policy_ready": main_policy_ready,
-        "kl_healthy": kl_healthy,
-        "gd_ready": gd_ready,
-        "coverage_need": coverage_need,
-        "low_main_cost": low_main_cost,
-        "low_boundary": low_boundary,
-    }
+    for key, value in stats.items():
+        logger.log(f"{prefix}/{key}", value, step)
 
 
-def joint_train_dfd_v3(
+def joint_train_dfd_v4(
     env_name,
     run_name,
     vec_env,
@@ -396,9 +262,10 @@ def joint_train_dfd_v3(
     replay_buffer,
     world_model,
     agent,
+    gp_critic,
     gd_critic,
     dual_policy,
-    dfd_cfg,
+    fdpi_cfg,
     train_model_every_steps,
     train_agent_every_steps,
     model_update,
@@ -416,7 +283,7 @@ def joint_train_dfd_v3(
 ):
     checkpoint_dir = os.path.abspath(os.path.expanduser(checkpoint_dir or f"ckpt/{run_name}"))
     os.makedirs(checkpoint_dir, exist_ok=True)
-    print(colorama.Fore.CYAN + f"Saving DFD v3 checkpoints to {checkpoint_dir}" + colorama.Style.RESET_ALL)
+    print(colorama.Fore.CYAN + f"Saving DFD v4 checkpoints to {checkpoint_dir}" + colorama.Style.RESET_ALL)
 
     num_envs = vec_env.num_envs
     offline_episode_writer = None
@@ -431,47 +298,39 @@ def joint_train_dfd_v3(
     if imagine_context <= 0:
         imagine_context = batch_length
 
-    replay_cfg = _node(dfd_cfg, "Replay")
-    cost_cfg = _node(dfd_cfg, "ContinuousCost")
-    gd_cfg = _node(dfd_cfg, "Gd")
-    dual_imag_cfg = _node(dfd_cfg, "DualImagination")
-    dual_sampling_cfg = _node(dfd_cfg, "DualSampling")
+    replay_cfg = _node(fdpi_cfg, "Replay")
+    cost_cfg = _node(fdpi_cfg, "ContinuousCost")
+    risk_cfg = _node(fdpi_cfg, "RiskCritic")
+    gp_cfg = _node(fdpi_cfg, "Gp")
+    gd_cfg = _node(fdpi_cfg, "Gd")
+    dual_update_cfg = _node(fdpi_cfg, "DualUpdate")
+    dual_sampling_cfg = _node(fdpi_cfg, "DualSampling")
+    wm_sampling_cfg = _node(fdpi_cfg, "WorldModelSampling")
 
-    world_model_max_dual_fraction = _cfg_float(replay_cfg, "world_model_max_dual_fraction", 0.10)
-    cost_positive_ratio = _cfg_float(replay_cfg, "cost_positive_ratio", 0.0)
+    high_cost_threshold = _cfg_float(wm_sampling_cfg, "HighCostThreshold", _cfg_float(gp_cfg, "HighCostThreshold", 0.1))
+    boundary_low = _cfg_float(wm_sampling_cfg, "BoundaryLow", _cfg_float(gp_cfg, "BoundaryLow", 0.05))
+    boundary_high = _cfg_float(wm_sampling_cfg, "BoundaryHigh", _cfg_float(gp_cfg, "BoundaryHigh", 0.4))
+    world_model_safety_ratio = (
+        _cfg_float(wm_sampling_cfg, "SafetyCriticalRatio", 0.20)
+        if _cfg_bool(wm_sampling_cfg, "EnableSafetyCriticalSampling", True)
+        else 0.0
+    )
     bottom_channels = tuple(int(v) for v in cfg_get(cost_cfg, "BottomForceChannels", [2, 5]))
+    gp_update_steps = max(_cfg_int(gp_cfg, "UpdateSteps", 1), 1)
     gd_update_steps = max(_cfg_int(gd_cfg, "UpdateSteps", 1), 1)
-    dual_update_steps = max(_cfg_int(dual_imag_cfg, "UpdateSteps", 1), 1)
-
-    dual_enabled = _cfg_bool(dual_sampling_cfg, "Enable", True)
-    dual_start_step = _cfg_int(dual_sampling_cfg, "StartStep", 120000)
-    dual_ratio_start = _cfg_float(dual_sampling_cfg, "RatioStart", 0.01)
-    dual_ratio_final = _cfg_float(dual_sampling_cfg, "RatioFinal", 0.03)
-    dual_ratio_warmup_steps = _cfg_int(dual_sampling_cfg, "RatioWarmupSteps", 100000)
-    require_kl_healthy = _cfg_bool(dual_sampling_cfg, "RequireKLHealthy", True)
-    dual_max_kl_for_sampling = _cfg_float(dual_imag_cfg, "MaxKLForSampling", 2.0)
-    min_model_updates = _cfg_int(dual_sampling_cfg, "MinModelUpdates", 1)
-    min_agent_updates = _cfg_int(dual_sampling_cfg, "MinAgentUpdates", 1)
-    require_gd_ready = _cfg_bool(dual_sampling_cfg, "RequireGdReady", True)
-    min_gd_updates = _cfg_int(dual_sampling_cfg, "MinGdUpdates", 1)
-    min_gd_separation = _cfg_float(dual_sampling_cfg, "MinGdSeparation", 0.0)
-    require_coverage_need = _cfg_bool(dual_sampling_cfg, "RequireCoverageNeed", True)
-    main_cost_rate_threshold = _cfg_float(dual_sampling_cfg, "MainCostRateThreshold", 0.10)
-    boundary_ratio_threshold = _cfg_float(dual_sampling_cfg, "BoundaryRatioThreshold", 0.05)
-    coverage_window_steps = _cfg_int(dual_sampling_cfg, "CoverageWindowSteps", max(num_envs * 100, 1))
-    boundary_cost_min = _cfg_float(dual_sampling_cfg, "BoundaryCostMin", 0.05)
-    boundary_cost_max = _cfg_float(dual_sampling_cfg, "BoundaryCostMax", 0.5)
+    dual_update_steps = max(_cfg_int(dual_update_cfg, "UpdateSteps", 1), 1)
+    pf = _cfg_float(risk_cfg, "Pf", 0.10)
+    cg = _cfg_float(risk_cfg, "Cg", 0.03)
+    feasible_window = FDPIRegimeStatsWindow(_cfg_int(dual_sampling_cfg, "FeasibleRatioWindow", 10000))
 
     model_update_count = 0
     agent_update_count = 0
+    gp_update_count = 0
     gd_update_count = 0
     dual_update_count = 0
     last_dual_kl = 0.0
-    last_gd_separation = 0.0
-    recent_coverage = _RecentDualCoverage(coverage_window_steps)
 
     episode_reward = torch.zeros(num_envs, dtype=torch.float32, device=device)
-    episode_safe_reward = torch.zeros(num_envs, dtype=torch.float32, device=device)
     episode_cost = torch.zeros(num_envs, dtype=torch.float32, device=device)
     episode_bottom_force = torch.zeros(num_envs, dtype=torch.float32, device=device)
     episode_bottom_force_peak = torch.zeros(num_envs, dtype=torch.float32, device=device)
@@ -483,6 +342,7 @@ def joint_train_dfd_v3(
 
     world_model.eval()
     agent.eval()
+    gp_critic.eval()
     gd_critic.eval()
     dual_policy.eval()
     state = world_model.initial(num_envs)
@@ -503,45 +363,24 @@ def joint_train_dfd_v3(
 
     for iter_idx in tqdm(range(total_iters)):
         env_steps = iter_idx * num_envs
+        g_main_for_window = None
 
         if replay_buffer.ready():
             with torch.no_grad():
                 world_model.eval()
                 agent.eval()
                 feat, state = world_model.get_inference_feat(state, current_obs, is_first)
-                dual_gate = _dual_sampling_gate_v3(
-                    env_steps=env_steps,
-                    enabled=dual_enabled,
-                    start_step=dual_start_step,
-                    model_updates=model_update_count,
-                    min_model_updates=min_model_updates,
-                    agent_updates=agent_update_count,
-                    min_agent_updates=min_agent_updates,
-                    require_kl_healthy=require_kl_healthy,
+                stats = feasible_window.stats()
+                dual_ratio, ratio_info = dual_ratio_from_fdpi_stats(
+                    step=env_steps,
+                    cfg=dual_sampling_cfg,
+                    stats=stats,
                     last_dual_kl=last_dual_kl,
-                    max_kl=dual_max_kl_for_sampling,
-                    require_gd_ready=require_gd_ready,
-                    gd_updates=gd_update_count,
-                    min_gd_updates=min_gd_updates,
-                    last_gd_separation=last_gd_separation,
-                    min_gd_separation=min_gd_separation,
-                    require_coverage_need=require_coverage_need,
-                    recent_main_cost_rate=recent_coverage.stats()["recent_main_cost_rate"],
-                    main_cost_rate_threshold=main_cost_rate_threshold,
-                    recent_boundary_ratio=recent_coverage.stats()["recent_boundary_ratio"],
-                    boundary_ratio_threshold=boundary_ratio_threshold,
                 )
-                dual_ratio = 0.0
-                if dual_gate["healthy"]:
-                    dual_ratio = linear_warmup(
-                        env_steps - dual_start_step,
-                        dual_ratio_start,
-                        dual_ratio_final,
-                        dual_ratio_warmup_steps,
-                    )
-                env_action, action, source, state = _sample_policy_action(
+                env_action, action, source, state, g_main_for_window = _sample_policy_action(
                     feat=feat,
                     agent=agent,
+                    gp_critic=gp_critic,
                     dual_policy=dual_policy,
                     world_model=world_model,
                     state=state,
@@ -550,18 +389,11 @@ def joint_train_dfd_v3(
                     num_envs=num_envs,
                     device=device,
                 )
-                logger.log("DualSampling/ratio", dual_ratio, env_steps)
-                logger.log("DualSampling/healthy", float(dual_gate["healthy"]), env_steps)
-                logger.log("DualSampling/step_ready", float(dual_gate["step_ready"]), env_steps)
-                logger.log("DualSampling/world_model_ready", float(dual_gate["world_model_ready"]), env_steps)
-                logger.log("DualSampling/main_policy_ready", float(dual_gate["main_policy_ready"]), env_steps)
-                logger.log("DualSampling/kl_healthy", float(dual_gate["kl_healthy"]), env_steps)
-                logger.log("DualSampling/gd_ready", float(dual_gate["gd_ready"]), env_steps)
-                logger.log("DualSampling/coverage_need", float(dual_gate["coverage_need"]), env_steps)
-                logger.log("DualSampling/low_main_cost", float(dual_gate["low_main_cost"]), env_steps)
-                logger.log("DualSampling/low_boundary", float(dual_gate["low_boundary"]), env_steps)
-                logger.log("DualSampling/kl_to_main", float(last_dual_kl), env_steps)
-                logger.log("DualSampling/gd_separation", float(last_gd_separation), env_steps)
+                logger.log("Dual/ratio", dual_ratio, env_steps)
+                logger.log("Dual/active", float(dual_ratio > 0.0), env_steps)
+                logger.log("Dual/kl_to_main", float(last_dual_kl), env_steps)
+                for key, value in ratio_info.items():
+                    logger.log(f"DualSampling/{key}", value, env_steps)
         else:
             sampled = vec_env.action_space.sample()
             env_action = np.asarray(sampled, dtype=np.float32)
@@ -581,8 +413,8 @@ def joint_train_dfd_v3(
             force_threshold=_cfg_float(cost_cfg, "ForceThreshold", 0.1),
             low_force_scale=_cfg_float(cost_cfg, "LowForceScale", 0.05),
             cost_force_max=_cfg_float(cost_cfg, "CostForceMax", 15.0),
-            extreme_force_threshold=_cfg_float(cost_cfg, "ExtremeForceThreshold", 5.0),
             force_scale=_cfg_float(cost_cfg, "ForceScale", 5.0),
+            extreme_force_threshold=_cfg_float(cost_cfg, "ExtremeForceThreshold", 5.0),
             clip_cost=_cfg_bool(cost_cfg, "ClipCost", True),
             cost_min=_cfg_float(cost_cfg, "CostMin", 0.0),
             cost_max=_cfg_float(cost_cfg, "CostMax", 1.0),
@@ -594,6 +426,15 @@ def joint_train_dfd_v3(
         extreme_cost = cost_parts["extreme_cost"]
         bottom_force = cost_parts["bottom_force"]
         force_excess = cost_parts["force_excess"]
+
+        if g_main_for_window is not None:
+            feasible_window.append(
+                g_main=g_main_for_window,
+                source=source,
+                continuous_cost=continuous_cost,
+                pf=pf,
+                cg=cg,
+            )
 
         terminal = torch.as_tensor(
             next_obs_dict.get("is_terminal", torch.zeros_like(done, dtype=torch.int32)),
@@ -621,16 +462,6 @@ def joint_train_dfd_v3(
         else:
             episode_timeout = torch.as_tensor(episode_timeout, dtype=torch.bool, device=device).view(-1)
 
-        recent_coverage.append(
-            source=source,
-            continuous_cost=continuous_cost,
-            binary_cost=binary_cost,
-            done=done,
-            episode_success=episode_success,
-            boundary_min=boundary_cost_min,
-            boundary_max=boundary_cost_max,
-        )
-
         force = None
         if getattr(replay_buffer, "include_force", False):
             force = _extract_force_obs(
@@ -657,13 +488,15 @@ def joint_train_dfd_v3(
         if offline_episode_writer is not None:
             offline_episode_writer.append_step(current_obs_dict, action, reward, done, is_first, env_steps + num_envs)
 
-        lambda_cost = _current_lambda_cost(dfd_cfg, env_steps)
         episode_reward += reward
-        episode_safe_reward += reward - lambda_cost * continuous_cost.view(-1)
         episode_cost += continuous_cost.view(-1)
         episode_bottom_force += bottom_force.view(-1)
         episode_bottom_force_peak = torch.maximum(episode_bottom_force_peak, bottom_force.view(-1))
         episode_len += 1.0
+        logger.log("Main/continuous_cost_mean", continuous_cost.float().mean().item(), env_steps)
+        logger.log("Dual/source_count", float((source == SOURCE_DUAL).sum().item()), env_steps)
+        if (source == SOURCE_DUAL).any():
+            logger.log("Dual/real_cost_mean", continuous_cost[source.view(-1) == SOURCE_DUAL].float().mean().item(), env_steps)
 
         if done.any():
             done_indices = torch.nonzero(done, as_tuple=False).flatten()
@@ -684,14 +517,11 @@ def joint_train_dfd_v3(
                     logger.log("Rollout/episode_cost", episode_cost[idx].item(), env_steps)
                     logger.log("Rollout/buffer_length", len(replay_buffer), env_steps)
                     logger.log("Main/task_return", episode_reward[idx].item(), env_steps)
-                    logger.log("Main/safe_return", episode_safe_reward[idx].item(), env_steps)
                     logger.log("Main/episode_cost_mean", episode_cost[idx].item() / ep_len, env_steps)
                     logger.log("Main/bottom_force_mean", episode_bottom_force[idx].item() / ep_len, env_steps)
                     logger.log("Main/bottom_force_peak", episode_bottom_force_peak[idx].item(), env_steps)
                     logger.log("Main/success_rate", episode_successes / max(episodes_completed, 1), env_steps)
-                    logger.log("Main/lambda_cost", lambda_cost, env_steps)
                 episode_reward[idx] = 0.0
-                episode_safe_reward[idx] = 0.0
                 episode_cost[idx] = 0.0
                 episode_bottom_force[idx] = 0.0
                 episode_bottom_force_peak[idx] = 0.0
@@ -714,42 +544,67 @@ def joint_train_dfd_v3(
                         batch_size,
                         batch_length,
                         return_dict=True,
-                        max_dual_fraction=world_model_max_dual_fraction,
+                        safety_critical_ratio=world_model_safety_ratio,
+                        high_cost_threshold=high_cost_threshold,
+                        boundary_low=boundary_low,
+                        boundary_high=boundary_high,
                     )
-                    train_world_model_step_dfd_v3(batch, world_model, agent, logger, env_steps)
+                    _log_batch_composition(
+                        logger,
+                        "WorldModelBatch",
+                        batch,
+                        env_steps,
+                        high_cost_threshold=high_cost_threshold,
+                        boundary_low=boundary_low,
+                        boundary_high=boundary_high,
+                    )
+                    train_world_model_step_dfd_v4(batch, world_model, agent, logger, env_steps)
                     model_update_count += 1
 
-            if (
-                _cfg_bool(gd_cfg, "Enable", True)
-                and iter_idx % train_agent_every_iters == 0
-                and replay_buffer.can_sample(batch_length)
-            ):
+            if _cfg_bool(gp_cfg, "Enable", True) and iter_idx % train_agent_every_iters == 0 and replay_buffer.can_sample(batch_length):
+                for _ in range(gp_update_steps):
+                    batch = replay_buffer.sample(
+                        batch_size,
+                        batch_length,
+                        return_dict=True,
+                        safety_critical_ratio=_cfg_float(gp_cfg, "SafetyCriticalRatio", 0.20),
+                        high_cost_threshold=high_cost_threshold,
+                        boundary_low=boundary_low,
+                        boundary_high=boundary_high,
+                    )
+                    gp_critic.update(batch, world_model, agent, dual_policy, logger=logger, step=env_steps)
+                    gp_update_count += 1
+
+            if _cfg_bool(gd_cfg, "Enable", True) and iter_idx % train_agent_every_iters == 0 and replay_buffer.can_sample(batch_length):
                 for _ in range(gd_update_steps):
                     batch = replay_buffer.sample(
                         batch_size,
                         batch_length,
                         return_dict=True,
-                        cost_positive_ratio=cost_positive_ratio,
+                        safety_critical_ratio=_cfg_float(gd_cfg, "SafetyCriticalRatio", 0.40),
+                        high_cost_threshold=high_cost_threshold,
+                        boundary_low=boundary_low,
+                        boundary_high=boundary_high,
                     )
-                    info_gd = gd_critic.update(batch, world_model, dual_policy, logger=logger, step=env_steps)
-                    last_gd_separation = float(info_gd.get("separation", last_gd_separation))
+                    gd_critic.update(batch, world_model, dual_policy, logger=logger, step=env_steps)
                     gd_update_count += 1
 
             if (
-                _cfg_bool(dual_imag_cfg, "Enable", True)
-                and env_steps >= _cfg_int(dual_imag_cfg, "StartStep", 100000)
+                _cfg_bool(dual_update_cfg, "Enable", True)
+                and env_steps >= _cfg_int(dual_update_cfg, "StartStep", 100000)
                 and iter_idx % train_agent_every_iters == 0
                 and replay_buffer.can_sample(batch_length)
             ):
                 for _ in range(dual_update_steps):
                     batch = replay_buffer.sample(batch_size, batch_length, return_dict=True)
-                    info_dual = update_dual_in_imagination_v3(
+                    info_dual = update_dual_v4(
                         batch,
                         world_model,
                         agent,
                         gd_critic,
                         dual_policy,
-                        dual_imag_cfg,
+                        dual_update_cfg,
+                        cost_cfg=cost_cfg,
                         logger=logger,
                         step=env_steps,
                     )
@@ -759,37 +614,42 @@ def joint_train_dfd_v3(
             if iter_idx % train_agent_every_iters == 0 and replay_buffer.can_sample(imagine_context):
                 for _ in range(agent_update):
                     imagine_samples = replay_buffer.sample(imagine_batch_size, imagine_context)
-                    train_agent_step_dfd_v3(
+                    train_agent_step_dfd_v4(
                         imagine_samples,
                         world_model,
                         agent,
+                        gp_critic,
                         imagine_horizon,
                         logger,
                         env_steps,
-                        dfd_cfg=dfd_cfg,
+                        fdpi_cfg=fdpi_cfg,
                     )
                     agent_update_count += 1
 
             collected_steps = env_steps + num_envs
             logger.log("Train/model_updates", model_update_count, env_steps)
             logger.log("Train/agent_updates", agent_update_count, env_steps)
+            logger.log("Train/gp_updates", gp_update_count, env_steps)
             logger.log("Train/gd_updates", gd_update_count, env_steps)
-            logger.log("Train/dual_imagination_updates", dual_update_count, env_steps)
+            logger.log("Train/dual_updates", dual_update_count, env_steps)
             logger.log("Train/model_update_ratio", model_update_count / collected_steps, env_steps)
             logger.log("Train/agent_update_ratio", agent_update_count / collected_steps, env_steps)
-            coverage_stats = recent_coverage.stats()
-            logger.log("DualSampling/recent_steps", coverage_stats["recent_steps"], env_steps)
-            logger.log("DualSampling/recent_main_cost_rate", coverage_stats["recent_main_cost_rate"], env_steps)
-            logger.log("DualSampling/recent_boundary_ratio", coverage_stats["recent_boundary_ratio"], env_steps)
-            logger.log("DualSampling/recent_success_rate", coverage_stats["recent_success_rate"], env_steps)
-            _log_replay_stats(replay_buffer, logger, env_steps)
+            _log_replay_stats(
+                replay_buffer,
+                logger,
+                env_steps,
+                high_cost_threshold=high_cost_threshold,
+                boundary_low=boundary_low,
+                boundary_high=boundary_high,
+            )
 
         if iter_idx % save_every_iters == 0:
-            print(colorama.Fore.GREEN + f"Saving DFD v3 model at total steps {env_steps}" + colorama.Style.RESET_ALL)
-            torch.save(world_model.state_dict(), os.path.join(checkpoint_dir, f"world_model_v3_{env_steps}.pth"))
-            torch.save(agent.state_dict(), os.path.join(checkpoint_dir, f"agent_v3_{env_steps}.pth"))
-            torch.save(gd_critic.state_dict(), os.path.join(checkpoint_dir, f"gd_v3_{env_steps}.pth"))
-            torch.save(dual_policy.state_dict(), os.path.join(checkpoint_dir, f"dual_policy_v3_{env_steps}.pth"))
+            print(colorama.Fore.GREEN + f"Saving DFD v4 model at total steps {env_steps}" + colorama.Style.RESET_ALL)
+            torch.save(world_model.state_dict(), os.path.join(checkpoint_dir, f"world_model_v4_{env_steps}.pth"))
+            torch.save(agent.state_dict(), os.path.join(checkpoint_dir, f"agent_v4_{env_steps}.pth"))
+            torch.save(gp_critic.state_dict(), os.path.join(checkpoint_dir, f"gp_v4_{env_steps}.pth"))
+            torch.save(gd_critic.state_dict(), os.path.join(checkpoint_dir, f"gd_v4_{env_steps}.pth"))
+            torch.save(dual_policy.state_dict(), os.path.join(checkpoint_dir, f"dual_policy_v4_{env_steps}.pth"))
 
     if offline_episode_writer is not None:
         offline_episode_writer.flush_pending(max_steps)

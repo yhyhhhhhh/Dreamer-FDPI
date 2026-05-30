@@ -81,25 +81,24 @@ ForceLoss:
   RegWeightMax: 6.0
 
 Wandb:
-  Project: "IsaacLab-PSSM-DFD-V3"
+  Project: "IsaacLab-PSSM-DFD-V4"
 
 Env:
   MakeKwargs:
     num_envs: 64
     use_fabric: True
 
-DFD_V2:
+FDPIRegimeDreamer:
   Replay:
-    world_model_max_dual_fraction: 0.10
-    cost_positive_ratio: 0.25
+    cost_positive_ratio: 0.0
 
   ContinuousCost:
     Enable: true
     ForceThreshold: 0.1
     LowForceScale: 0.05
     CostForceMax: 15.0
-    ExtremeForceThreshold: 5.0
     ForceScale: 5.0
+    ExtremeForceThreshold: 5.0
     ClipCost: true
     CostMin: 0.0
     CostMax: 1.0
@@ -118,62 +117,93 @@ DFD_V2:
     ExtremeCostWeight: 4.0
     PriorLossWeight: 0.5
 
-  Gd:
+  RiskCritic:
+    GammaCost: 0.97
+    RiskMax: 1.0
+    TargetTau: 0.005
+    Pf: 0.20
+    Cg: 0.10
+
+  Gp:
     Enable: true
     GammaCost: 0.97
-    DoubleCritic: true
-    TargetTau: 0.005
     RiskMax: 1.0
+    TargetTau: 0.005
     SourceAwareWeight: true
-    DualSourceWeight: 2.0
-    HighCostWeight: 3.0
+    HighCostWeight: 2.0
+    DualSourceWeight: 1.0
+    BoundaryWeight: 2.0
     HighCostThreshold: 0.1
+    BoundaryLow: 0.05
+    BoundaryHigh: 0.4
+    SafetyCriticalRatio: 0.20
     HiddenDim: 256
     NumLayers: 2
     LR: 1.0e-4
     Eps: 1.0e-8
     UpdateSteps: 1
 
+  Gd:
+    Enable: true
+    GammaCost: 0.97
+    RiskMax: 1.0
+    TargetTau: 0.005
+    SourceAwareWeight: true
+    HighCostWeight: 3.0
+    DualSourceWeight: 2.0
+    BoundaryWeight: 2.0
+    HighCostThreshold: 0.1
+    BoundaryLow: 0.05
+    BoundaryHigh: 0.4
+    SafetyCriticalRatio: 0.40
+    HiddenDim: 256
+    NumLayers: 2
+    LR: 1.0e-4
+    Eps: 1.0e-8
+    UpdateSteps: 1
+
+  MainFDPIRegime:
+    Enable: true
+    StartStep: 200000
+    LambdaCri: 0.02
+    LambdaInf: 0.05
+    WarmupSteps: 100000
+    EntropyCoef: 1.0e-4
+
   DualPolicy:
     LR: 8.0e-5
     Eps: 1.0e-5
     InitFromMainActor: true
-    KLReference: "current_main"
 
-  DualImagination:
+  DualSampling:
     Enable: true
     StartStep: 100000
-    Horizon: 5
-    Objective: "max_risk"
-    KLCoeff: 1.0
+    FeasibleRatioWindow: 10000
+    RatioFea95: 0.50
+    RatioFea90: 0.35
+    RatioFea80: 0.20
+    RatioCriticalHigh: 0.15
+    RatioUnsafeHigh: 0.05
+    RatioDefault: 0.10
     MaxKLForSampling: 2.0
+    HighMainCostRate: 0.20
+    MaxRatioWhenMainCostHigh: 0.10
+
+  DualUpdate:
+    Enable: true
+    StartStep: 100000
+    Type: "imagined_risk_return"
+    Horizon: 5
+    GammaCost: 0.97
+    KLCoeff: 1.0
     EntropyCoef: 1.0e-4
     GradClipNorm: 100.0
     UpdateSteps: 1
 
-  DualSampling:
-    Enable: true
-    StartStep: 120000
-    RatioStart: 0.01
-    RatioFinal: 0.03
-    RatioWarmupSteps: 100000
-    RequireKLHealthy: true
-    MinModelUpdates: 1
-    MinAgentUpdates: 1
-    RequireGdReady: true
-    MinGdUpdates: 1
-    MinGdSeparation: 0.0
-    RequireCoverageNeed: true
-    MainCostRateThreshold: 0.10
-    BoundaryRatioThreshold: 0.05
-    CoverageWindowSteps: 6400
-    BoundaryCostMin: 0.05
-    BoundaryCostMax: 0.5
-
-  MainCostAwareReward:
-    Enable: true
-    StartStep: 100000
-    LambdaStart: 0.3
-    LambdaCost: 3.0
-    LambdaWarmupSteps: 200000
-    UsePredictedCost: true
+  WorldModelSampling:
+    EnableSafetyCriticalSampling: true
+    UniformRatio: 0.80
+    SafetyCriticalRatio: 0.20
+    HighCostThreshold: 0.1
+    BoundaryLow: 0.05
+    BoundaryHigh: 0.4

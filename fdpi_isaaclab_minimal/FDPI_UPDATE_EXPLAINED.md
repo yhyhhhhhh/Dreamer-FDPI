@@ -109,6 +109,8 @@ cumulative_log_weight_dual = beta * (cumulative_log_weight_dual + log_weight_dua
 (obs, action, next_obs, reward, cost, done, log_weight, log_weight_dual)
 ```
 
+当前实现里的写入顺序有一个细节：`trainer.py` 会先把“截至当前状态已经累计好的” `cumulative_log_weight` / `cumulative_log_weight_dual` 写入 replay，然后才把本步刚采样动作得到的 `log_weight` / `log_weight_dual` 累加进去，供后续 transition 使用。也就是说，buffer 中的两个权重字段是轨迹级累计权重，而不是单步动作的即时 log-ratio。
+
 需要注意一个命名细节：在 `update()` 里：
 
 ```python
@@ -120,6 +122,61 @@ dual_weight = exp(data.log_weight)
 
 - `weight` 用于主策略、主 Q、主 G、GR 更新，目的是把 dual 采样的数据修正回主策略分布。
 - `dual_weight` 用于 dual cost critic 和 dual policy 更新，目的是把主策略采样的数据修正到 dual 分布。
+
+### 3.1 训练步骤总览：重点看采样
+
+从训练流程上看，FDPI 每一轮可以分成“并行环境采样 -> 写入 replay -> 从 replay 抽 batch 更新网络 -> 记录 feasible 状态并决定下轮是否启用 dual”的闭环。
+
+1. 初始化环境、算法、replay buffer 和日志目录，并 `env.reset(seed)` 得到第一批 `obs["policy"]`。
+2. 初始化计数器 `sample_steps`、`update_steps`，以及每个环境一条的累计 IS 权重：
+   `cumulative_log_weight` 和 `cumulative_log_weight_dual`。
+3. 每轮开始先根据最近若干次更新得到的 `feasible_ratio` 滑动均值决定 `dual_active`。窗口均值超过 `dual_thresh` 时，后半环境才真正使用 `dual_pi` 采样；否则 dual 分支暂时不干预采样。
+4. 在 `sample_per_iteration` 次环境交互中执行采样。采样分两个阶段：
+   - `sample_steps < start_steps`：warm-up 阶段，所有并行环境都执行 `[-1, 1]` 均匀随机动作，两个 log weight 都置零。
+   - `sample_steps >= start_steps`：策略采样阶段，`algorithm.act(obs, dual_active)` 同时生成主策略动作 `act`、dual 动作 `dual_act`，以及两组单步 log-ratio。
+5. 策略采样阶段会把并行环境分成两半：
+   - 前半环境执行 `pi` 采样得到的 `act[:half_env_num]`。
+   - 后半环境执行 `dual_pi` 采样得到的 `dual_act[half_env_num:]`。
+
+   因此一次 `env.step(action)` 中同时收集了主策略分布的数据和 dual 分布的数据。这样做的目的不是让 dual policy 取代主策略，而是让 replay buffer 更容易覆盖安全边界、高风险动作和 violation 附近区域。
+6. `algorithm.act()` 还会计算两种方向的 importance sampling log-ratio：
+
+```text
+log_weight      = log dual_pi(a_pi | s) - log pi(a_pi | s)
+log_weight_dual = log pi(a_dual | s)    - log dual_pi(a_dual | s)
+```
+
+   前者用于把主策略采样的数据重加权到 dual 分布，后者用于把 dual 采样的数据重加权回主策略分布。代码会把这两个值 clamp 到 `[log(min_weight), log(max_weight)]`，避免极端权重破坏训练。
+7. 执行 `env.step(action)` 后，trainer 提取：
+   - `reward`：环境奖励。
+   - `cost`：从 `extras`、diagnostics 或 force observation 中提取的安全代价。
+   - `episode_done = terminated | truncated`：用于统计 episode 结束。
+   - `bootstrap_done = terminated & ~truncated`：用于 TD target 是否停止 bootstrap。
+   - `real_next_obs`：如果环境在终止时提供 `terminal_observation`，则用真实终止观测替换 reset 后的下一观测。
+8. 写入 replay buffer 的字段是：
+
+```text
+obs, action, real_next_obs, reward, cost, bootstrap_done,
+cumulative_log_weight, cumulative_log_weight_dual
+```
+
+   这里存的是累计权重。写入完成后，才把本步的单步 log-ratio 融入累计权重：
+
+```text
+cumulative_log_weight[first_half] =
+    beta * (cumulative_log_weight[first_half] + log_weight[first_half])
+
+cumulative_log_weight_dual[second_half] =
+    beta * (
+        cumulative_log_weight_dual[second_half]
+        + log_weight_dual[second_half]
+    )
+```
+
+   只更新实际由对应策略执行的那半环境：前半环境更新 `log_weight`，后半环境更新 `log_weight_dual`。如果某个环境 episode 结束，就把该环境的累计权重清零，避免跨 episode 传播旧轨迹的 likelihood ratio。
+9. 采样步数达到 `start_steps` 且 replay 中样本数不少于 `batch_size` 后，开始更新网络。每次更新从 replay 中均匀随机抽一个 batch，然后执行 `TorchSACFPIDual.update()`。
+10. `update()` 内部依次更新 reward critic `Q`、主 cost critic `G`、恢复 critic `GR`、主策略 `pi`、温度 `alpha`、主策略安全乘子 `cg/lam1/lam2`、dual cost critic、dual policy、dual KL 乘子 `lam3/lam4`，最后软更新所有 target network。
+11. 每次更新返回的 `feasible_ratio` 会进入滑动窗口，反过来影响后续采样是否启用 dual policy。这个闭环让训练早期先用随机/主策略稳定收集数据，等主策略产生足够 feasible 样本后，再让 dual policy 更主动地探索风险边界。
 
 ## 4. `update()` 输入数据
 
