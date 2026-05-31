@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 
 import numpy as np
 import torch
@@ -45,7 +46,6 @@ except ImportError:
 from .cost_utils import (
     SOURCE_DUAL,
     SOURCE_MAIN,
-    SOURCE_RANDOM,
     cfg_get,
     continuous_cost_from_force_prediction,
     extract_continuous_cost,
@@ -137,11 +137,13 @@ def _main_fdpi_cfg(fdpi_cfg):
     risk_cfg = _node(fdpi_cfg, "RiskCritic")
     main_cfg = _node(fdpi_cfg, "MainFDPIRegime")
     return {
-        "Pf": _cfg_float(risk_cfg, "Pf", 0.10),
-        "Cg": _cfg_float(risk_cfg, "Cg", 0.03),
+        "Pf": _cfg_float(risk_cfg, "Pf", 0.40),
+        "Cg": _cfg_float(risk_cfg, "Cg", 0.10),
         "RiskMax": _cfg_float(risk_cfg, "RiskMax", 1.0),
-        "LambdaCri": _cfg_float(main_cfg, "LambdaCri", 0.02),
-        "LambdaInf": _cfg_float(main_cfg, "LambdaInf", 0.05),
+        "LambdaCri": _cfg_float(main_cfg, "LambdaCri", 0.001),
+        "LambdaInf": _cfg_float(main_cfg, "LambdaInf", 0.002),
+        "MinRewardWeightCri": _cfg_float(main_cfg, "MinRewardWeightCri", 0.80),
+        "MinRewardWeightInf": _cfg_float(main_cfg, "MinRewardWeightInf", 0.80),
         "EntropyCoef": _cfg_float(main_cfg, "EntropyCoef", 1.0e-4),
     }
 
@@ -168,7 +170,7 @@ def train_agent_step_dfd_v4(
     main_cfg = _node(fdpi_cfg, "MainFDPIRegime")
     if (
         _cfg_bool(main_cfg, "Enable", True)
-        and int(step) >= _cfg_int(main_cfg, "StartStep", 200000)
+        and int(step) >= _cfg_int(main_cfg, "StartStep", 1500000)
         and gp_critic is not None
     ):
         info = agent.update_fdpi_regime(
@@ -225,6 +227,51 @@ def _sample_policy_action(
     return env_action, action, source, state, g_main
 
 
+def _action_bounds(vec_env, device, dtype):
+    space = getattr(vec_env, "single_action_space", getattr(vec_env, "action_space", None))
+    low = getattr(space, "low", None)
+    high = getattr(space, "high", None)
+    if low is None or high is None:
+        return None, None
+    low_t = torch.as_tensor(low, dtype=dtype, device=device).reshape(1, -1)
+    high_t = torch.as_tensor(high, dtype=dtype, device=device).reshape(1, -1)
+    return low_t, high_t
+
+
+def _sample_warmup_policy_noise_action(
+    *,
+    current_obs,
+    is_first,
+    agent,
+    world_model,
+    state,
+    vec_env,
+    num_envs,
+    device,
+    noise_std,
+    greedy_base=False,
+):
+    with torch.no_grad():
+        world_model.eval()
+        agent.eval()
+        feat, state = world_model.get_inference_feat(state, current_obs, is_first)
+        base_action = agent.sample(feat, greedy=bool(greedy_base))
+        if float(noise_std) > 0.0:
+            noise = torch.randn_like(base_action) * float(noise_std)
+            action = base_action + noise
+        else:
+            action = base_action
+        low, high = _action_bounds(vec_env, device, action.dtype)
+        if low is not None and high is not None:
+            action = torch.max(torch.min(action, high), low)
+        else:
+            action = action.clamp(-1.0, 1.0)
+        source = torch.full((num_envs, 1), SOURCE_MAIN, dtype=torch.int64, device=device)
+        state = world_model.update_inference_state(state, action)
+        env_action = action.detach().cpu().numpy()
+    return env_action, action, source, state
+
+
 def _log_replay_stats(replay_buffer, logger, step, *, high_cost_threshold=0.1, boundary_low=0.05, boundary_high=0.4):
     if not hasattr(replay_buffer, "source_stats"):
         return
@@ -254,6 +301,81 @@ def _log_batch_composition(logger, prefix, batch, step, *, high_cost_threshold, 
         logger.log(f"{prefix}/{key}", value, step)
 
 
+def _module_optimizer_state(module):
+    optimizer = getattr(module, "optimizer", None)
+    return optimizer.state_dict() if optimizer is not None else None
+
+
+def _module_scaler_state(module):
+    scaler = getattr(module, "scaler", None)
+    return scaler.state_dict() if scaler is not None else None
+
+
+def _agent_ema_state(agent):
+    state = {}
+    for name in ("lower_ema", "upper_ema"):
+        ema = getattr(agent, name, None)
+        if ema is not None:
+            state[name] = {
+                "scalar": float(getattr(ema, "scalar", 0.0)),
+                "decay": float(getattr(ema, "decay", 0.0)),
+            }
+    return state
+
+
+def _rng_state():
+    state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _save_full_state_v4(
+    path,
+    *,
+    env_steps,
+    world_model,
+    agent,
+    gp_critic,
+    gd_critic,
+    dual_policy,
+    replay_buffer,
+    save_replay_buffer=True,
+    save_optimizer=True,
+):
+    payload = {
+        "format": "fdpi_regime_dreamer_v4_full_state",
+        "version": 1,
+        "env_steps": int(env_steps),
+        "world_model_state_dict": world_model.state_dict(),
+        "agent_state_dict": agent.state_dict(),
+        "gp_state_dict": gp_critic.state_dict(),
+        "gd_state_dict": gd_critic.state_dict(),
+        "dual_policy_state_dict": dual_policy.state_dict(),
+        "agent_ema_state": _agent_ema_state(agent),
+        "rng_state": _rng_state(),
+    }
+    if save_optimizer:
+        payload["optimizer_state_dicts"] = {
+            "world_model": _module_optimizer_state(world_model),
+            "agent": _module_optimizer_state(agent),
+            "gp": _module_optimizer_state(gp_critic),
+            "gd": _module_optimizer_state(gd_critic),
+            "dual_policy": _module_optimizer_state(dual_policy),
+        }
+        payload["scaler_state_dicts"] = {
+            "world_model": _module_scaler_state(world_model),
+            "agent": _module_scaler_state(agent),
+        }
+    if save_replay_buffer:
+        payload["replay_buffer_state_dict"] = replay_buffer.state_dict(cpu=True)
+    torch.save(payload, path)
+
+
 def joint_train_dfd_v4(
     env_name,
     run_name,
@@ -280,6 +402,7 @@ def joint_train_dfd_v4(
     device,
     offline_dataset_dir=None,
     checkpoint_dir=None,
+    initial_env_steps=0,
 ):
     checkpoint_dir = os.path.abspath(os.path.expanduser(checkpoint_dir or f"ckpt/{run_name}"))
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -299,6 +422,7 @@ def joint_train_dfd_v4(
         imagine_context = batch_length
 
     replay_cfg = _node(fdpi_cfg, "Replay")
+    warmup_sampling_cfg = _node(fdpi_cfg, "WarmupSampling")
     cost_cfg = _node(fdpi_cfg, "ContinuousCost")
     risk_cfg = _node(fdpi_cfg, "RiskCritic")
     gp_cfg = _node(fdpi_cfg, "Gp")
@@ -306,6 +430,7 @@ def joint_train_dfd_v4(
     dual_update_cfg = _node(fdpi_cfg, "DualUpdate")
     dual_sampling_cfg = _node(fdpi_cfg, "DualSampling")
     wm_sampling_cfg = _node(fdpi_cfg, "WorldModelSampling")
+    checkpoint_cfg = _node(fdpi_cfg, "Checkpoint")
 
     high_cost_threshold = _cfg_float(wm_sampling_cfg, "HighCostThreshold", _cfg_float(gp_cfg, "HighCostThreshold", 0.1))
     boundary_low = _cfg_float(wm_sampling_cfg, "BoundaryLow", _cfg_float(gp_cfg, "BoundaryLow", 0.05))
@@ -316,6 +441,12 @@ def joint_train_dfd_v4(
         else 0.0
     )
     bottom_channels = tuple(int(v) for v in cfg_get(cost_cfg, "BottomForceChannels", [2, 5]))
+    warmup_noise_std = _cfg_float(warmup_sampling_cfg, "NoiseStd", 0.50)
+    warmup_greedy_base = _cfg_bool(warmup_sampling_cfg, "GreedyBase", False)
+    save_full_state = _cfg_bool(checkpoint_cfg, "SaveFullState", True)
+    save_replay_buffer = _cfg_bool(checkpoint_cfg, "SaveReplayBuffer", True)
+    save_optimizer = _cfg_bool(checkpoint_cfg, "SaveOptimizer", True)
+    full_state_prefix = str(cfg_get(checkpoint_cfg, "FullStatePrefix", "full_state_v4"))
     gp_update_steps = max(_cfg_int(gp_cfg, "UpdateSteps", 1), 1)
     gd_update_steps = max(_cfg_int(gd_cfg, "UpdateSteps", 1), 1)
     dual_update_steps = max(_cfg_int(dual_update_cfg, "UpdateSteps", 1), 1)
@@ -354,15 +485,17 @@ def joint_train_dfd_v4(
     episode_failures = 0
     episode_timeouts = 0
 
-    logger.log(f"Rollout/IsaacLab/{env_name}_reward", 0, 0)
-    logger.log("Rollout/buffer_length", 0, 0)
-    total_iters = max_steps // num_envs
+    initial_env_steps = max(int(initial_env_steps), 0)
+    logger.log(f"Rollout/IsaacLab/{env_name}_reward", 0, initial_env_steps)
+    logger.log("Rollout/buffer_length", 0, initial_env_steps)
+    remaining_steps = max(int(max_steps) - initial_env_steps, 0)
+    total_iters = remaining_steps // num_envs
     train_model_every_iters = max(train_model_every_steps // num_envs, 1)
     train_agent_every_iters = max(train_agent_every_steps // num_envs, 1)
     save_every_iters = max(save_every_steps // num_envs, 1)
 
     for iter_idx in tqdm(range(total_iters)):
-        env_steps = iter_idx * num_envs
+        env_steps = initial_env_steps + iter_idx * num_envs
         g_main_for_window = None
 
         if replay_buffer.ready():
@@ -395,10 +528,20 @@ def joint_train_dfd_v4(
                 for key, value in ratio_info.items():
                     logger.log(f"DualSampling/{key}", value, env_steps)
         else:
-            sampled = vec_env.action_space.sample()
-            env_action = np.asarray(sampled, dtype=np.float32)
-            action = torch.as_tensor(env_action, dtype=torch.float32, device=device)
-            source = torch.full((num_envs, 1), SOURCE_RANDOM, dtype=torch.int64, device=device)
+            env_action, action, source, state = _sample_warmup_policy_noise_action(
+                current_obs=current_obs,
+                is_first=is_first,
+                agent=agent,
+                world_model=world_model,
+                state=state,
+                vec_env=vec_env,
+                num_envs=num_envs,
+                device=device,
+                noise_std=warmup_noise_std,
+                greedy_base=warmup_greedy_base,
+            )
+            logger.log("Warmup/policy_noise", 1.0, env_steps)
+            logger.log("Warmup/noise_std", warmup_noise_std, env_steps)
 
         next_obs_dict, reward, done, info = vec_env.step(env_action)
         reward = torch.as_tensor(reward, dtype=torch.float32, device=device)
@@ -650,6 +793,21 @@ def joint_train_dfd_v4(
             torch.save(gp_critic.state_dict(), os.path.join(checkpoint_dir, f"gp_v4_{env_steps}.pth"))
             torch.save(gd_critic.state_dict(), os.path.join(checkpoint_dir, f"gd_v4_{env_steps}.pth"))
             torch.save(dual_policy.state_dict(), os.path.join(checkpoint_dir, f"dual_policy_v4_{env_steps}.pth"))
+            if save_full_state:
+                full_state_path = os.path.join(checkpoint_dir, f"{full_state_prefix}_{env_steps}.pth")
+                _save_full_state_v4(
+                    full_state_path,
+                    env_steps=env_steps,
+                    world_model=world_model,
+                    agent=agent,
+                    gp_critic=gp_critic,
+                    gd_critic=gd_critic,
+                    dual_policy=dual_policy,
+                    replay_buffer=replay_buffer,
+                    save_replay_buffer=save_replay_buffer,
+                    save_optimizer=save_optimizer,
+                )
+                print(colorama.Fore.GREEN + f"Saved DFD v4 full state to {full_state_path}" + colorama.Style.RESET_ALL)
 
     if offline_episode_writer is not None:
         offline_episode_writer.flush_pending(max_steps)

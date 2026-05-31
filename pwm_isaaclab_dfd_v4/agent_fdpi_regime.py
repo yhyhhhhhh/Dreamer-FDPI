@@ -27,6 +27,11 @@ def _weighted_masked_mean(value: torch.Tensor, mask: torch.Tensor, weight: torch
     return (value * mask * weight).sum() / denom
 
 
+def _weighted_mean(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    weight = weight.to(dtype=value.dtype, device=value.device)
+    return (value * weight).sum() / weight.sum().clamp_min(1.0)
+
+
 def fdpi_regime_loss_components(
     *,
     log_prob: torch.Tensor,
@@ -40,6 +45,8 @@ def fdpi_regime_loss_components(
     lambda_inf: float,
     risk_max: float,
     entropy_coef: float,
+    min_reward_weight_cri: float = 0.80,
+    min_reward_weight_inf: float = 0.80,
     eps: float = 1.0e-6,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     g_mask = g.detach()
@@ -52,20 +59,48 @@ def fdpi_regime_loss_components(
     risk_excess = torch.relu(g - float(pf)) / max(float(risk_max) - float(pf), eps)
 
     reward_adv = norm_adv.detach()
-    loss_fea_per = -log_prob * reward_adv
-    loss_cri_per = -(1.0 - alpha) * log_prob * reward_adv + alpha * float(lambda_cri) * risk_margin
-    loss_inf_per = float(lambda_inf) * risk_excess
+    reward_pg = -log_prob * reward_adv
+    min_reward_weight_cri = float(min_reward_weight_cri)
+    min_reward_weight_inf = float(min_reward_weight_inf)
+    cri_reward_weight = torch.clamp(1.0 - alpha, min=min_reward_weight_cri, max=1.0)
+    inf_reward_weight = g.new_full(g.shape, min_reward_weight_inf)
+    loss_fea_per = reward_pg
+    loss_cri_per = cri_reward_weight * reward_pg + alpha * float(lambda_cri) * risk_margin
+    loss_inf_per = inf_reward_weight * reward_pg + float(lambda_inf) * risk_excess
+    reward_per = torch.where(fea, reward_pg, torch.where(cri, cri_reward_weight * reward_pg, inf_reward_weight * reward_pg))
+    risk_per = torch.where(
+        fea,
+        torch.zeros_like(reward_pg),
+        torch.where(cri, alpha * float(lambda_cri) * risk_margin, float(lambda_inf) * risk_excess),
+    )
+    loss_per = torch.where(fea, loss_fea_per, torch.where(cri, loss_cri_per, loss_inf_per))
 
     loss_fea = _weighted_masked_mean(loss_fea_per, fea, weight)
     loss_cri = _weighted_masked_mean(loss_cri_per, cri, weight)
     loss_inf = _weighted_masked_mean(loss_inf_per, inf, weight)
-    entropy_loss = (entropy * weight).mean()
-    total = loss_fea + loss_cri + loss_inf - float(entropy_coef) * entropy_loss
+    reward_loss_fea = _weighted_masked_mean(reward_pg, fea, weight)
+    reward_loss_cri = _weighted_masked_mean(cri_reward_weight * reward_pg, cri, weight)
+    reward_loss_inf = _weighted_masked_mean(inf_reward_weight * reward_pg, inf, weight)
+    risk_loss_cri = _weighted_masked_mean(alpha * float(lambda_cri) * risk_margin, cri, weight)
+    risk_loss_inf = _weighted_masked_mean(float(lambda_inf) * risk_excess, inf, weight)
+    reward_loss_total = _weighted_mean(reward_per, weight)
+    risk_loss_total = _weighted_mean(risk_per, weight)
+    entropy_loss = _weighted_mean(entropy, weight)
+    total = _weighted_mean(loss_per, weight) - float(entropy_coef) * entropy_loss
 
     metrics = {
         "loss_fea": loss_fea.detach(),
         "loss_cri": loss_cri.detach(),
         "loss_inf": loss_inf.detach(),
+        "reward_loss_total": reward_loss_total.detach(),
+        "reward_loss_fea": reward_loss_fea.detach(),
+        "reward_loss_cri": reward_loss_cri.detach(),
+        "reward_loss_inf": reward_loss_inf.detach(),
+        "risk_loss_total": risk_loss_total.detach(),
+        "risk_loss_cri": risk_loss_cri.detach(),
+        "risk_loss_inf": risk_loss_inf.detach(),
+        "cri_reward_weight": cri_reward_weight.detach()[cri].mean() if cri.any() else g.new_tensor(0.0),
+        "inf_reward_weight": inf_reward_weight.detach()[inf].mean() if inf.any() else g.new_tensor(0.0),
         "entropy": entropy_loss.detach(),
         "fea_ratio": fea.float().mean().detach(),
         "cri_ratio": cri.float().mean().detach(),
@@ -94,12 +129,14 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
         del action
         self.train()
         self.slow_critic.eval()
-        pf = float(cfg_get(cfg, "Pf", 0.10))
-        cg = float(cfg_get(cfg, "Cg", 0.03))
-        lambda_cri = float(cfg_get(cfg, "LambdaCri", 0.02))
-        lambda_inf = float(cfg_get(cfg, "LambdaInf", 0.05))
+        pf = float(cfg_get(cfg, "Pf", 0.40))
+        cg = float(cfg_get(cfg, "Cg", 0.10))
+        lambda_cri = float(cfg_get(cfg, "LambdaCri", 0.001))
+        lambda_inf = float(cfg_get(cfg, "LambdaInf", 0.002))
         risk_max = float(cfg_get(cfg, "RiskMax", getattr(gp_critic, "risk_max", 1.0)))
         entropy_coef = float(cfg_get(cfg, "EntropyCoef", self.entropy_coef))
+        min_reward_weight_cri = float(cfg_get(cfg, "MinRewardWeightCri", 0.80))
+        min_reward_weight_inf = float(cfg_get(cfg, "MinRewardWeightInf", 0.80))
 
         with torch.autocast(device_type=self.device_type, dtype=self.tensor_dtype, enabled=self.use_amp):
             means, stds, raw_value = self.get_logits_raw_value(feat)
@@ -136,6 +173,8 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
                 lambda_inf=lambda_inf,
                 risk_max=risk_max,
                 entropy_coef=entropy_coef,
+                min_reward_weight_cri=min_reward_weight_cri,
+                min_reward_weight_inf=min_reward_weight_inf,
             )
             total_loss = critic_loss + fdpi_actor_loss
 

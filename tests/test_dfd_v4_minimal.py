@@ -184,6 +184,33 @@ class DFDV4MinimalTests(unittest.TestCase):
         self.assertGreater(float((batch["continuous_cost"] > 0.1).float().mean()), 0.0)
         self.assertGreater(replay.cost_stats()["dual_cost_mean"], replay.cost_stats()["main_cost_mean"])
 
+    def test_replay_state_dict_round_trip(self):
+        replay = DFDV4ReplayBuffer(3, 2, 1, max_length=32, warmup_length=4, device="cpu")
+        for step in range(7):
+            cost = torch.tensor([[0.2 if step % 2 else 0.0]])
+            replay.append(
+                torch.full((1, 3), float(step)),
+                torch.full((1, 2), float(step) / 10.0),
+                torch.ones(1) * step,
+                torch.zeros(1, dtype=torch.bool),
+                torch.zeros(1, 1),
+                continuous_cost=cost,
+                binary_cost=(cost > 0).float(),
+                extreme_cost=torch.zeros(1, 1),
+                bottom_force=torch.ones(1, 1) + cost,
+                force_excess=cost * 5.0,
+                source=torch.tensor([[SOURCE_DUAL if step >= 5 else SOURCE_MAIN]]),
+            )
+        restored = DFDV4ReplayBuffer(3, 2, 1, max_length=32, warmup_length=4, device="cpu")
+        restored.load_state_dict(replay.state_dict())
+        self.assertEqual(restored.length, replay.length)
+        self.assertEqual(restored.num_appends, replay.num_appends)
+        rows = replay.length + 1
+        self.assertTrue(torch.equal(restored.obs_buffer[:rows], replay.obs_buffer[:rows]))
+        self.assertTrue(torch.equal(restored.continuous_cost_buffer[:rows], replay.continuous_cost_buffer[:rows]))
+        self.assertTrue(torch.equal(restored.source_buffer[:rows], replay.source_buffer[:rows]))
+        self.assertEqual(restored.source_stats(), replay.source_stats())
+
     def test_gp_gd_targets_use_max_min_without_one_minus_cost(self):
         torch.manual_seed(1)
         world_model = _FakeWorldModel(feat_dim=3, action_dim=2)
@@ -208,7 +235,7 @@ class DFDV4MinimalTests(unittest.TestCase):
         self.assertAlmostEqual(gd_info["target_mean"], 0.7, places=5)
 
     def test_fdpi_regime_loss_segments_are_finite(self):
-        log_prob = torch.zeros(1, 3, 1, requires_grad=True)
+        log_prob = torch.tensor([[[-0.2], [-0.4], [-0.6]]], requires_grad=True)
         entropy = torch.ones(1, 3, 1)
         norm_adv = torch.ones(1, 3, 1)
         g = torch.tensor([[[0.04], [0.08], [0.15]]], requires_grad=True)
@@ -224,11 +251,41 @@ class DFDV4MinimalTests(unittest.TestCase):
             lambda_inf=0.05,
             risk_max=1.0,
             entropy_coef=1.0e-4,
+            min_reward_weight_inf=0.30,
         )
         self.assertTrue(torch.isfinite(loss))
         self.assertAlmostEqual(float(metrics["fea_ratio"]), 1.0 / 3.0)
         self.assertAlmostEqual(float(metrics["cri_ratio"]), 1.0 / 3.0)
         self.assertAlmostEqual(float(metrics["inf_ratio"]), 1.0 / 3.0)
+        self.assertAlmostEqual(float(metrics["inf_reward_weight"]), 0.30)
+        self.assertNotAlmostEqual(float(metrics["reward_loss_inf"]), 0.0)
+
+    def test_fdpi_regime_total_loss_is_sample_weighted(self):
+        log_prob = -torch.ones(1, 100, 1, requires_grad=True)
+        entropy = torch.zeros(1, 100, 1)
+        norm_adv = torch.ones(1, 100, 1)
+        g = torch.zeros(1, 100, 1, requires_grad=True)
+        g.data[:, -1:] = 0.5
+        norm_adv.data[:, -1:] = 100.0
+        loss, metrics = fdpi_regime_loss_components(
+            log_prob=log_prob,
+            entropy=entropy,
+            norm_adv=norm_adv,
+            g=g,
+            weight=torch.ones(1, 100, 1),
+            pf=0.40,
+            cg=0.10,
+            lambda_cri=0.0,
+            lambda_inf=0.0,
+            risk_max=1.0,
+            entropy_coef=0.0,
+            min_reward_weight_inf=1.0,
+        )
+        self.assertAlmostEqual(float(metrics["fea_ratio"]), 0.99, places=5)
+        self.assertAlmostEqual(float(metrics["inf_ratio"]), 0.01, places=5)
+        self.assertAlmostEqual(float(metrics["reward_loss_fea"]), 1.0, places=5)
+        self.assertAlmostEqual(float(metrics["reward_loss_inf"]), 100.0, places=5)
+        self.assertAlmostEqual(float(loss.detach()), 1.99, places=5)
 
     def test_dual_ratio_uses_fdpi_stats_and_safety_caps(self):
         cfg = {

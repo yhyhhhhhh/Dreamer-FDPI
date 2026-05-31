@@ -43,10 +43,92 @@ class DFDV4ReplayBuffer(ProprioReplayBuffer):
         self.bottom_force_buffer = torch.zeros(*default, 1, dtype=torch.float32, device=device)
         self.force_excess_buffer = torch.zeros(*default, 1, dtype=torch.float32, device=device)
         self.source_buffer = torch.full((*default, 1), SOURCE_MAIN, dtype=torch.int64, device=device)
+        self.num_appends = 0
 
     @property
     def cost_buffer(self):
         return self.continuous_cost_buffer
+
+    def _valid_row_count(self):
+        if self.length < 0:
+            return 0
+        return min(int(getattr(self, "num_appends", self.length + 1)), self.max_length // self.num_envs)
+
+    def state_dict(self, *, cpu=True):
+        rows = self._valid_row_count()
+
+        def pack(tensor):
+            value = tensor[:rows].detach().clone()
+            return value.cpu() if cpu else value
+
+        state = {
+            "version": 1,
+            "num_envs": int(self.num_envs),
+            "max_length": int(self.max_length),
+            "warmup_length": int(self.warmup_length),
+            "include_force": bool(self.include_force),
+            "force_dim": int(self.force_dim),
+            "force_key": self.force_key,
+            "length": int(self.length),
+            "num_appends": int(getattr(self, "num_appends", rows)),
+            "obs_buffer": pack(self.obs_buffer),
+            "action_buffer": pack(self.action_buffer),
+            "reward_buffer": pack(self.reward_buffer),
+            "done_buffer": pack(self.done_buffer),
+            "is_first_buffer": pack(self.is_first_buffer),
+            "continuous_cost_buffer": pack(self.continuous_cost_buffer),
+            "binary_cost_buffer": pack(self.binary_cost_buffer),
+            "extreme_cost_buffer": pack(self.extreme_cost_buffer),
+            "bottom_force_buffer": pack(self.bottom_force_buffer),
+            "force_excess_buffer": pack(self.force_excess_buffer),
+            "source_buffer": pack(self.source_buffer),
+        }
+        if self.include_force and self.force_buffer is not None:
+            state["force_buffer"] = pack(self.force_buffer)
+        return state
+
+    def load_state_dict(self, state):
+        if int(state.get("num_envs", self.num_envs)) != int(self.num_envs):
+            raise ValueError(f"Replay num_envs mismatch: {state.get('num_envs')} != {self.num_envs}")
+        if bool(state.get("include_force", self.include_force)) != bool(self.include_force):
+            raise ValueError("Replay include_force mismatch.")
+        self.warmup_length = int(state.get("warmup_length", self.warmup_length))
+        self.force_key = state.get("force_key", self.force_key)
+
+        def restore(name, required=True):
+            if name not in state:
+                if required:
+                    raise KeyError(f"Replay checkpoint missing `{name}`.")
+                return
+            target = getattr(self, name)
+            value = torch.as_tensor(state[name], dtype=target.dtype, device=self.device)
+            if value.ndim != target.ndim or value.shape[1:] != target.shape[1:]:
+                raise ValueError(f"Replay `{name}` shape mismatch: {tuple(value.shape)} vs {tuple(target.shape)}")
+            if value.shape[0] > target.shape[0]:
+                raise ValueError(f"Replay `{name}` has {value.shape[0]} rows, capacity is {target.shape[0]}.")
+            if value.shape[0] > 0:
+                target[: value.shape[0]].copy_(value)
+
+        restore("obs_buffer")
+        restore("action_buffer")
+        restore("reward_buffer")
+        restore("done_buffer")
+        restore("is_first_buffer")
+        restore("continuous_cost_buffer")
+        restore("binary_cost_buffer")
+        restore("extreme_cost_buffer")
+        restore("bottom_force_buffer")
+        restore("force_excess_buffer")
+        restore("source_buffer")
+        if self.include_force and self.force_buffer is not None:
+            restore("force_buffer")
+
+        self.length = int(state.get("length", -1))
+        self.num_appends = int(state.get("num_appends", self.length + 1 if self.length >= 0 else 0))
+        max_rows = self.max_length // self.num_envs
+        if self.length >= max_rows:
+            raise ValueError(f"Replay length index {self.length} exceeds capacity rows {max_rows}.")
+        return self
 
     def _window_has_source(self, env_idx, starts, horizon, source):
         if starts.numel() == 0:
@@ -263,6 +345,7 @@ class DFDV4ReplayBuffer(ProprioReplayBuffer):
         cost=None,
     ):
         super().append(obs, action, reward, done, is_first, force=force)
+        self.num_appends += 1
         row = self.length
         if continuous_cost is None:
             continuous_cost = cost

@@ -145,7 +145,7 @@ def dual_ratio_from_fdpi_stats(
 ) -> tuple[float, dict[str, float]]:
     enabled = bool(cfg_get(cfg, "Enable", True))
     start_step = int(cfg_get(cfg, "StartStep", 100000))
-    max_kl = float(cfg_get(cfg, "MaxKLForSampling", 2.0))
+    max_kl = float(cfg_get(cfg, "MaxKLForSampling", 200.0))
     high_main_cost_rate = float(cfg_get(cfg, "HighMainCostRate", 0.20))
     max_ratio_when_main_cost_high = float(cfg_get(cfg, "MaxRatioWhenMainCostHigh", 0.10))
 
@@ -155,7 +155,7 @@ def dual_ratio_from_fdpi_stats(
     ratio = 0.0
     if enabled and step_ready and kl_healthy and stats_ready:
         if stats.fea_ratio >= 0.95:
-            ratio = float(cfg_get(cfg, "RatioFea95", 0.50))
+            ratio = float(cfg_get(cfg, "RatioFea95", 0.20))
         elif stats.fea_ratio >= 0.90:
             ratio = float(cfg_get(cfg, "RatioFea90", 0.35))
         elif stats.fea_ratio >= 0.80:

@@ -92,6 +92,10 @@ FDPIRegimeDreamer:
   Replay:
     cost_positive_ratio: 0.0
 
+  WarmupSampling:
+    NoiseStd: 0.50
+    GreedyBase: false
+
   ContinuousCost:
     Enable: true
     ForceThreshold: 0.1
@@ -121,7 +125,7 @@ FDPIRegimeDreamer:
     GammaCost: 0.97
     RiskMax: 1.0
     TargetTau: 0.005
-    Pf: 0.20
+    Pf: 0.40
     Cg: 0.10
 
   Gp:
@@ -164,9 +168,11 @@ FDPIRegimeDreamer:
 
   MainFDPIRegime:
     Enable: true
-    StartStep: 200000
-    LambdaCri: 0.02
-    LambdaInf: 0.05
+    StartStep: 1500000
+    LambdaCri: 0.001
+    LambdaInf: 0.002
+    MinRewardWeightCri: 0.80
+    MinRewardWeightInf: 0.80
     WarmupSteps: 100000
     EntropyCoef: 1.0e-4
 
@@ -179,13 +185,13 @@ FDPIRegimeDreamer:
     Enable: true
     StartStep: 100000
     FeasibleRatioWindow: 10000
-    RatioFea95: 0.50
+    RatioFea95: 0.20
     RatioFea90: 0.35
     RatioFea80: 0.20
     RatioCriticalHigh: 0.15
     RatioUnsafeHigh: 0.05
     RatioDefault: 0.10
-    MaxKLForSampling: 2.0
+    MaxKLForSampling: 200.0
     HighMainCostRate: 0.20
     MaxRatioWhenMainCostHigh: 0.10
 
@@ -207,3 +213,9 @@ FDPIRegimeDreamer:
     HighCostThreshold: 0.1
     BoundaryLow: 0.05
     BoundaryHigh: 0.4
+
+  Checkpoint:
+    SaveFullState: true
+    SaveReplayBuffer: true
+    SaveOptimizer: true
+    FullStatePrefix: "full_state_v4"

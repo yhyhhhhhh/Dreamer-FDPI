@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 import traceback
 import warnings
+
+import numpy as np
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -150,6 +153,10 @@ def load_dfd_v4_config(config_path):
     replay = _ensure_node(fdpi, "Replay")
     _set_default(replay, "cost_positive_ratio", 0.0)
 
+    warmup_sampling = _ensure_node(fdpi, "WarmupSampling")
+    _set_default(warmup_sampling, "NoiseStd", 0.50)
+    _set_default(warmup_sampling, "GreedyBase", False)
+
     cost = _ensure_node(fdpi, "ContinuousCost")
     _set_default(cost, "Enable", True)
     _set_default(cost, "ForceThreshold", 0.1)
@@ -179,8 +186,8 @@ def load_dfd_v4_config(config_path):
     _set_default(risk, "GammaCost", 0.97)
     _set_default(risk, "RiskMax", 1.0)
     _set_default(risk, "TargetTau", 0.005)
-    _set_default(risk, "Pf", 0.10)
-    _set_default(risk, "Cg", 0.03)
+    _set_default(risk, "Pf", 0.40)
+    _set_default(risk, "Cg", 0.10)
 
     for name, dual_weight, high_weight in (("Gp", 1.0, 2.0), ("Gd", 2.0, 3.0)):
         node = _ensure_node(fdpi, name)
@@ -204,9 +211,11 @@ def load_dfd_v4_config(config_path):
 
     main = _ensure_node(fdpi, "MainFDPIRegime")
     _set_default(main, "Enable", True)
-    _set_default(main, "StartStep", 200000)
-    _set_default(main, "LambdaCri", 0.02)
-    _set_default(main, "LambdaInf", 0.05)
+    _set_default(main, "StartStep", 1500000)
+    _set_default(main, "LambdaCri", 0.001)
+    _set_default(main, "LambdaInf", 0.002)
+    _set_default(main, "MinRewardWeightCri", 0.80)
+    _set_default(main, "MinRewardWeightInf", 0.80)
     _set_default(main, "WarmupSteps", 100000)
     _set_default(main, "EntropyCoef", 1.0e-4)
 
@@ -219,13 +228,13 @@ def load_dfd_v4_config(config_path):
     _set_default(dual_sampling, "Enable", True)
     _set_default(dual_sampling, "StartStep", 100000)
     _set_default(dual_sampling, "FeasibleRatioWindow", 10000)
-    _set_default(dual_sampling, "RatioFea95", 0.50)
+    _set_default(dual_sampling, "RatioFea95", 0.20)
     _set_default(dual_sampling, "RatioFea90", 0.35)
     _set_default(dual_sampling, "RatioFea80", 0.20)
     _set_default(dual_sampling, "RatioCriticalHigh", 0.15)
     _set_default(dual_sampling, "RatioUnsafeHigh", 0.05)
     _set_default(dual_sampling, "RatioDefault", 0.10)
-    _set_default(dual_sampling, "MaxKLForSampling", 2.0)
+    _set_default(dual_sampling, "MaxKLForSampling", 200.0)
     _set_default(dual_sampling, "HighMainCostRate", 0.20)
     _set_default(dual_sampling, "MaxRatioWhenMainCostHigh", 0.10)
 
@@ -247,6 +256,12 @@ def load_dfd_v4_config(config_path):
     _set_default(wm_sampling, "HighCostThreshold", 0.1)
     _set_default(wm_sampling, "BoundaryLow", 0.05)
     _set_default(wm_sampling, "BoundaryHigh", 0.4)
+
+    checkpoint = _ensure_node(fdpi, "Checkpoint")
+    _set_default(checkpoint, "SaveFullState", True)
+    _set_default(checkpoint, "SaveReplayBuffer", True)
+    _set_default(checkpoint, "SaveOptimizer", True)
+    _set_default(checkpoint, "FullStatePrefix", "full_state_v4")
 
     conf.freeze()
     return conf
@@ -432,6 +447,197 @@ def _report_exception(exc, checkpoint_dir=None):
             print(colorama.Fore.YELLOW + f"Could not save DFD v4 error report: {report_exc}" + colorama.Style.RESET_ALL)
 
 
+def _infer_latest_v4_checkpoint_step(checkpoint_dir):
+    steps = []
+    prefix = "world_model_v4_"
+    suffix = ".pth"
+    for filename in os.listdir(checkpoint_dir):
+        if not (filename.startswith(prefix) and filename.endswith(suffix)):
+            continue
+        step_text = filename[len(prefix) : -len(suffix)]
+        if step_text.isdigit():
+            steps.append(int(step_text))
+    if not steps:
+        raise FileNotFoundError(f"No world_model_v4_*.pth checkpoints found in {checkpoint_dir}")
+    return max(steps)
+
+
+def _load_state_dict_file(module, path, device, label, *, strict=True):
+    state = torch.load(path, map_location=device)
+    incompatible = module.load_state_dict(state, strict=strict)
+    missing = list(getattr(incompatible, "missing_keys", []))
+    unexpected = list(getattr(incompatible, "unexpected_keys", []))
+    status = "strict" if strict else "non-strict"
+    print(
+        colorama.Fore.CYAN
+        + f"Loaded {label} from {path} ({status}, missing={len(missing)}, unexpected={len(unexpected)})"
+        + colorama.Style.RESET_ALL
+    )
+    if missing:
+        print(colorama.Fore.YELLOW + f"{label} missing keys: {missing[:8]}" + colorama.Style.RESET_ALL)
+    if unexpected:
+        print(colorama.Fore.YELLOW + f"{label} unexpected keys: {unexpected[:8]}" + colorama.Style.RESET_ALL)
+
+
+def _load_v4_checkpoint_bundle(
+    checkpoint_dir,
+    checkpoint_step,
+    *,
+    world_model,
+    agent,
+    gp_critic,
+    gd_critic,
+    dual_policy,
+    device,
+):
+    checkpoint_dir = os.path.abspath(os.path.expanduser(checkpoint_dir))
+    if checkpoint_step is None:
+        checkpoint_step = _infer_latest_v4_checkpoint_step(checkpoint_dir)
+    components = (
+        ("world_model", world_model, f"world_model_v4_{checkpoint_step}.pth"),
+        ("agent", agent, f"agent_v4_{checkpoint_step}.pth"),
+        ("gp", gp_critic, f"gp_v4_{checkpoint_step}.pth"),
+        ("gd", gd_critic, f"gd_v4_{checkpoint_step}.pth"),
+        ("dual_policy", dual_policy, f"dual_policy_v4_{checkpoint_step}.pth"),
+    )
+    for _, _, filename in components:
+        path = os.path.join(checkpoint_dir, filename)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing v4 checkpoint component: {path}")
+    for label, module, filename in components:
+        _load_state_dict_file(
+            module,
+            os.path.join(checkpoint_dir, filename),
+            device,
+            label,
+            strict=True,
+        )
+    if hasattr(agent, "sync_slow_critic"):
+        agent.sync_slow_critic()
+    return int(checkpoint_step)
+
+
+def _infer_step_from_full_checkpoint_path(path):
+    name = os.path.basename(os.path.abspath(path))
+    prefix = "full_state_v4_"
+    suffix = ".pth"
+    if name.startswith(prefix) and name.endswith(suffix):
+        step_text = name[len(prefix) : -len(suffix)]
+        if step_text.isdigit():
+            return int(step_text)
+    return None
+
+
+def _load_optimizer_state(module, state, label):
+    optimizer = getattr(module, "optimizer", None)
+    if optimizer is None or state is None:
+        return
+    optimizer.load_state_dict(state)
+    print(colorama.Fore.CYAN + f"Loaded {label} optimizer state" + colorama.Style.RESET_ALL)
+
+
+def _load_scaler_state(module, state, label):
+    scaler = getattr(module, "scaler", None)
+    if scaler is None or state is None:
+        return
+    scaler.load_state_dict(state)
+    print(colorama.Fore.CYAN + f"Loaded {label} AMP scaler state" + colorama.Style.RESET_ALL)
+
+
+def _restore_agent_ema(agent, state):
+    if not isinstance(state, dict):
+        return
+    for name in ("lower_ema", "upper_ema"):
+        ema = getattr(agent, name, None)
+        ema_state = state.get(name)
+        if ema is None or not isinstance(ema_state, dict):
+            continue
+        ema.scalar = float(ema_state.get("scalar", getattr(ema, "scalar", 0.0)))
+        if "decay" in ema_state:
+            ema.decay = float(ema_state["decay"])
+    print(colorama.Fore.CYAN + "Loaded agent EMA scale state" + colorama.Style.RESET_ALL)
+
+
+def _restore_rng_state(state):
+    if not isinstance(state, dict):
+        return
+    if "python" in state:
+        random.setstate(state["python"])
+    if "numpy" in state:
+        np.random.set_state(state["numpy"])
+    if "torch" in state:
+        torch.set_rng_state(state["torch"].cpu())
+    if "torch_cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["torch_cuda"])
+    print(colorama.Fore.CYAN + "Loaded Python/NumPy/Torch RNG state" + colorama.Style.RESET_ALL)
+
+
+def _load_v4_full_checkpoint(
+    path,
+    *,
+    world_model,
+    agent,
+    gp_critic,
+    gd_critic,
+    dual_policy,
+    replay_buffer,
+    device,
+    load_optimizer=True,
+    load_replay_buffer=True,
+    load_rng=True,
+):
+    path = os.path.abspath(os.path.expanduser(path))
+    del device
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    _load_state_dict_file_from_state(world_model, checkpoint["world_model_state_dict"], "world_model")
+    _load_state_dict_file_from_state(agent, checkpoint["agent_state_dict"], "agent")
+    _load_state_dict_file_from_state(gp_critic, checkpoint["gp_state_dict"], "gp")
+    _load_state_dict_file_from_state(gd_critic, checkpoint["gd_state_dict"], "gd")
+    _load_state_dict_file_from_state(dual_policy, checkpoint["dual_policy_state_dict"], "dual_policy")
+    if hasattr(agent, "sync_slow_critic"):
+        agent.sync_slow_critic()
+    _restore_agent_ema(agent, checkpoint.get("agent_ema_state"))
+
+    if load_optimizer:
+        optimizer_states = checkpoint.get("optimizer_state_dicts", {})
+        _load_optimizer_state(world_model, optimizer_states.get("world_model"), "world_model")
+        _load_optimizer_state(agent, optimizer_states.get("agent"), "agent")
+        _load_optimizer_state(gp_critic, optimizer_states.get("gp"), "gp")
+        _load_optimizer_state(gd_critic, optimizer_states.get("gd"), "gd")
+        _load_optimizer_state(dual_policy, optimizer_states.get("dual_policy"), "dual_policy")
+        scaler_states = checkpoint.get("scaler_state_dicts", {})
+        _load_scaler_state(world_model, scaler_states.get("world_model"), "world_model")
+        _load_scaler_state(agent, scaler_states.get("agent"), "agent")
+
+    replay_state = checkpoint.get("replay_buffer_state_dict")
+    if load_replay_buffer and replay_state is not None:
+        replay_buffer.load_state_dict(replay_state)
+        print(
+            colorama.Fore.CYAN
+            + f"Loaded replay buffer with {len(replay_buffer)} transitions"
+            + colorama.Style.RESET_ALL
+        )
+    if load_rng:
+        _restore_rng_state(checkpoint.get("rng_state"))
+    print(colorama.Fore.CYAN + f"Loaded DFD v4 full checkpoint from {path}" + colorama.Style.RESET_ALL)
+    return int(checkpoint.get("env_steps", _infer_step_from_full_checkpoint_path(path) or 0))
+
+
+def _load_state_dict_file_from_state(module, state, label, *, strict=True):
+    incompatible = module.load_state_dict(state, strict=strict)
+    missing = list(getattr(incompatible, "missing_keys", []))
+    unexpected = list(getattr(incompatible, "unexpected_keys", []))
+    print(
+        colorama.Fore.CYAN
+        + f"Loaded {label} state ({'strict' if strict else 'non-strict'}, missing={len(missing)}, unexpected={len(unexpected)})"
+        + colorama.Style.RESET_ALL
+    )
+    if missing:
+        print(colorama.Fore.YELLOW + f"{label} missing keys: {missing[:8]}" + colorama.Style.RESET_ALL)
+    if unexpected:
+        print(colorama.Fore.YELLOW + f"{label} unexpected keys: {unexpected[:8]}" + colorama.Style.RESET_ALL)
+
+
 def main():
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser()
@@ -447,6 +653,17 @@ def main():
     parser.add_argument("--run_id", type=str, default=None)
     parser.add_argument("--note", type=str, default=None)
     parser.add_argument("--tags", type=str, default="")
+    parser.add_argument("--v4_full_checkpoint_path", type=str, default=None)
+    parser.add_argument("--v4_checkpoint_dir", type=str, default=None)
+    parser.add_argument("--v4_checkpoint_step", type=int, default=None)
+    parser.add_argument("--resume_env_steps", type=int, default=None)
+    parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--main_fdpi_start_step", type=int, default=None)
+    parser.add_argument("--buffer_warmup_steps", type=int, default=None)
+    parser.add_argument("--save_every_steps", type=int, default=None)
+    parser.add_argument("--no_load_replay_buffer", action="store_true")
+    parser.add_argument("--no_load_optimizer", action="store_true")
+    parser.add_argument("--no_load_rng", action="store_true")
     parser.add_argument("--no_run_info_prompt", action="store_true")
     args = parser.parse_args()
 
@@ -454,9 +671,48 @@ def main():
     _load_training_deps()
     torch.backends.cudnn.benchmark = False
     conf = load_dfd_v4_config(args.config_path)
+    if (
+        args.max_steps is not None
+        or args.main_fdpi_start_step is not None
+        or args.buffer_warmup_steps is not None
+        or args.save_every_steps is not None
+    ):
+        conf.defrost()
+        if args.max_steps is not None:
+            conf.JointTrainAgent.SampleMaxSteps = int(args.max_steps)
+        if args.buffer_warmup_steps is not None:
+            conf.JointTrainAgent.BufferWarmUp = int(args.buffer_warmup_steps)
+        if args.save_every_steps is not None:
+            conf.JointTrainAgent.SaveEverySteps = int(args.save_every_steps)
+        if args.main_fdpi_start_step is not None:
+            conf.FDPIRegimeDreamer.MainFDPIRegime.StartStep = int(args.main_fdpi_start_step)
+        conf.freeze()
     checkpoint_path = os.path.abspath(os.path.expanduser(args.checkpoint_path)) if args.checkpoint_path else None
     if checkpoint_path and not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    v4_checkpoint_dir = (
+        os.path.abspath(os.path.expanduser(args.v4_checkpoint_dir)) if args.v4_checkpoint_dir else None
+    )
+    if v4_checkpoint_dir and not os.path.isdir(v4_checkpoint_dir):
+        raise FileNotFoundError(f"v4 checkpoint directory not found: {v4_checkpoint_dir}")
+    v4_checkpoint_step = args.v4_checkpoint_step
+    if v4_checkpoint_dir and v4_checkpoint_step is None:
+        v4_checkpoint_step = _infer_latest_v4_checkpoint_step(v4_checkpoint_dir)
+    v4_full_checkpoint_path = (
+        os.path.abspath(os.path.expanduser(args.v4_full_checkpoint_path)) if args.v4_full_checkpoint_path else None
+    )
+    if v4_full_checkpoint_path and not os.path.isfile(v4_full_checkpoint_path):
+        raise FileNotFoundError(f"v4 full checkpoint not found: {v4_full_checkpoint_path}")
+    if v4_full_checkpoint_path is None and v4_checkpoint_dir and v4_checkpoint_step is not None:
+        candidate = os.path.join(v4_checkpoint_dir, f"full_state_v4_{v4_checkpoint_step}.pth")
+        if os.path.isfile(candidate):
+            v4_full_checkpoint_path = candidate
+    full_checkpoint_step = _infer_step_from_full_checkpoint_path(v4_full_checkpoint_path) if v4_full_checkpoint_path else None
+    initial_env_steps = (
+        int(args.resume_env_steps)
+        if args.resume_env_steps is not None
+        else int(full_checkpoint_step or v4_checkpoint_step or 0)
+    )
 
     run_info = collect_training_info(note=args.note, tags=args.tags, prompt=not args.no_run_info_prompt)
     checkpoint_dir = make_unique_run_dir(
@@ -479,6 +735,10 @@ def main():
             "device": args.device,
             "algorithm": "FDPI-Regime Dreamer v4",
             "checkpoint_path": checkpoint_path,
+            "v4_full_checkpoint_path": v4_full_checkpoint_path,
+            "v4_checkpoint_dir": v4_checkpoint_dir,
+            "v4_checkpoint_step": v4_checkpoint_step,
+            "resume_env_steps": initial_env_steps,
         },
     )
 
@@ -523,6 +783,19 @@ def main():
     dual_policy = build_dual_policy(conf, action_dim, act, args.device)
     if bool(cfg_get(conf.FDPIRegimeDreamer.DualPolicy, "InitFromMainActor", True)):
         dual_policy.initialize_from_main_actor(agent)
+    if v4_checkpoint_dir and not v4_full_checkpoint_path:
+        loaded_step = _load_v4_checkpoint_bundle(
+            v4_checkpoint_dir,
+            v4_checkpoint_step,
+            world_model=world_model,
+            agent=agent,
+            gp_critic=gp_critic,
+            gd_critic=gd_critic,
+            dual_policy=dual_policy,
+            device=args.device,
+        )
+        if args.resume_env_steps is None:
+            initial_env_steps = loaded_step
 
     replay_buffer = DFDV4ReplayBuffer(
         obs_dim,
@@ -543,6 +816,23 @@ def main():
     )
     if save_offline_episodes and not offline_dataset_dir:
         offline_dataset_dir = os.path.join(checkpoint_dir, "offline_episodes")
+
+    if v4_full_checkpoint_path:
+        loaded_step = _load_v4_full_checkpoint(
+            v4_full_checkpoint_path,
+            world_model=world_model,
+            agent=agent,
+            gp_critic=gp_critic,
+            gd_critic=gd_critic,
+            dual_policy=dual_policy,
+            replay_buffer=replay_buffer,
+            device=args.device,
+            load_optimizer=not args.no_load_optimizer,
+            load_replay_buffer=not args.no_load_replay_buffer,
+            load_rng=not args.no_load_rng,
+        )
+        if args.resume_env_steps is None:
+            initial_env_steps = loaded_step
 
     try:
         joint_train_dfd_v4(
@@ -571,6 +861,7 @@ def main():
             args.device,
             offline_dataset_dir=offline_dataset_dir if save_offline_episodes else None,
             checkpoint_dir=checkpoint_dir,
+            initial_env_steps=initial_env_steps,
         )
     except Exception as exc:
         _report_exception(exc, checkpoint_dir)
