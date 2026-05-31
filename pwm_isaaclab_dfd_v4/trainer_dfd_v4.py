@@ -145,6 +145,8 @@ def _main_fdpi_cfg(fdpi_cfg):
         "MinRewardWeightCri": _cfg_float(main_cfg, "MinRewardWeightCri", 0.80),
         "MinRewardWeightInf": _cfg_float(main_cfg, "MinRewardWeightInf", 0.80),
         "EntropyCoef": _cfg_float(main_cfg, "EntropyCoef", 1.0e-4),
+        "ActionAnchorCoef": _cfg_float(main_cfg, "ActionAnchorCoef", 0.0),
+        "DetachActionForLogProb": _cfg_bool(main_cfg, "DetachActionForLogProb", False),
     }
 
 

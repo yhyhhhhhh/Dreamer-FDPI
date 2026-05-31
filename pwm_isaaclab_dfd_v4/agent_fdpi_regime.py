@@ -126,7 +126,6 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
         logger=None,
         step=None,
     ):
-        del action
         self.train()
         self.slow_critic.eval()
         pf = float(cfg_get(cfg, "Pf", 0.40))
@@ -137,13 +136,16 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
         entropy_coef = float(cfg_get(cfg, "EntropyCoef", self.entropy_coef))
         min_reward_weight_cri = float(cfg_get(cfg, "MinRewardWeightCri", 0.80))
         min_reward_weight_inf = float(cfg_get(cfg, "MinRewardWeightInf", 0.80))
+        action_anchor_coef = float(cfg_get(cfg, "ActionAnchorCoef", 0.0))
+        detach_action_logprob = bool(cfg_get(cfg, "DetachActionForLogProb", False))
 
         with torch.autocast(device_type=self.device_type, dtype=self.tensor_dtype, enabled=self.use_amp):
             means, stds, raw_value = self.get_logits_raw_value(feat)
             stds = self.std_scale * torch.sigmoid(stds + 2) + self.std_offset
             dist = Normal(torch.tanh(means[:, :-1]), stds[:, :-1])
             main_action = dist.rsample()
-            log_prob = dist.log_prob(main_action)[..., None]
+            log_prob_action = main_action.detach() if detach_action_logprob else main_action
+            log_prob = dist.log_prob(log_prob_action)[..., None]
             entropy = dist.entropy()[..., None]
 
             with torch.no_grad():
@@ -176,6 +178,13 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
                 min_reward_weight_cri=min_reward_weight_cri,
                 min_reward_weight_inf=min_reward_weight_inf,
             )
+            action_anchor_loss = torch.zeros((), dtype=fdpi_actor_loss.dtype, device=fdpi_actor_loss.device)
+            if action_anchor_coef > 0.0 and action is not None:
+                anchor_len = min(int(main_action.shape[1]), int(action.shape[1]), int(weight.shape[1]))
+                anchor_action = action[:, :anchor_len].detach().to(dtype=main_action.dtype, device=main_action.device)
+                anchor_error = (main_action[:, :anchor_len] - anchor_action).square().mean(dim=-1, keepdim=True)
+                action_anchor_loss = _weighted_mean(anchor_error, weight[:, :anchor_len])
+                fdpi_actor_loss = fdpi_actor_loss + action_anchor_coef * action_anchor_loss
             total_loss = critic_loss + fdpi_actor_loss
 
         self.scaler.scale(total_loss).backward()
@@ -187,15 +196,20 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
         self.update_slow_critic()
 
         if logger is not None:
+            logger.log("MainFDPI/enabled", 1.0, step)
             logger.log("ActorCritic/critic_loss", critic_loss.detach().float().item(), step)
             logger.log("ActorCritic/fdpi_actor_loss", fdpi_actor_loss.detach().float().item(), step)
             logger.log("ActorCritic/scale", self.get_scale(), step)
             logger.log("ActorCritic/lambda_return", lambda_return.mean().detach().float().item(), step)
             logger.log("ActorCritic/norm_adv", norm_adv.mean().detach().float().item(), step)
+            logger.log("MainFDPI/action_anchor_loss", action_anchor_loss.detach().float().item(), step)
+            logger.log("MainFDPI/action_anchor_coef", action_anchor_coef, step)
+            logger.log("MainFDPI/detach_action_logprob", float(detach_action_logprob), step)
             for key, value in metrics.items():
                 logger.log(f"MainFDPI/{key}", value.detach().float().item(), step)
         return {
             "critic_loss": float(critic_loss.detach().float().item()),
             "fdpi_actor_loss": float(fdpi_actor_loss.detach().float().item()),
+            "action_anchor_loss": float(action_anchor_loss.detach().float().item()),
             **{key: float(value.detach().float().item()) for key, value in metrics.items()},
         }

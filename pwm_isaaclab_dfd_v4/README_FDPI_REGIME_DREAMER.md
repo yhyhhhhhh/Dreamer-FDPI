@@ -32,6 +32,16 @@ Use the IsaacLab launcher, as with the other training entrypoints:
   -device cuda:0
 ```
 
+Lite entry:
+
+```bash
+WANDB_MODE=online \
+RUN_NAME=dfd-v4-lite \
+bash pwm_isaaclab_dfd_v4/train_dfd_v4_lite.sh
+```
+
+Pass any resume or checkpoint variables through the same wrapper, for example `V4_FULL_CHECKPOINT_PATH`, `RESUME_ENV_STEPS`, `SAMPLE_MAX_STEPS`, or `SAVE_EVERY_STEPS`.
+
 ## Smoke Checks
 
 ```bash

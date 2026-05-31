@@ -175,6 +175,7 @@ FDPIRegimeDreamer:
     MinRewardWeightInf: 0.80
     WarmupSteps: 100000
     EntropyCoef: 1.0e-4
+    DetachActionForLogProb: true
 
   DualPolicy:
     LR: 8.0e-5

@@ -218,6 +218,7 @@ def load_dfd_v4_config(config_path):
     _set_default(main, "MinRewardWeightInf", 0.80)
     _set_default(main, "WarmupSteps", 100000)
     _set_default(main, "EntropyCoef", 1.0e-4)
+    _set_default(main, "DetachActionForLogProb", True)
 
     dual_policy = _ensure_node(fdpi, "DualPolicy")
     _set_default(dual_policy, "LR", 8.0e-5)
@@ -659,6 +660,12 @@ def main():
     parser.add_argument("--resume_env_steps", type=int, default=None)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--main_fdpi_start_step", type=int, default=None)
+    parser.add_argument("--main_fdpi_lambda_cri", type=float, default=None)
+    parser.add_argument("--main_fdpi_lambda_inf", type=float, default=None)
+    parser.add_argument("--main_fdpi_min_reward_weight_cri", type=float, default=None)
+    parser.add_argument("--main_fdpi_min_reward_weight_inf", type=float, default=None)
+    parser.add_argument("--main_fdpi_action_anchor_coef", type=float, default=None)
+    parser.add_argument("--main_fdpi_detach_action_logprob", action="store_true")
     parser.add_argument("--buffer_warmup_steps", type=int, default=None)
     parser.add_argument("--save_every_steps", type=int, default=None)
     parser.add_argument("--no_load_replay_buffer", action="store_true")
@@ -674,6 +681,12 @@ def main():
     if (
         args.max_steps is not None
         or args.main_fdpi_start_step is not None
+        or args.main_fdpi_lambda_cri is not None
+        or args.main_fdpi_lambda_inf is not None
+        or args.main_fdpi_min_reward_weight_cri is not None
+        or args.main_fdpi_min_reward_weight_inf is not None
+        or args.main_fdpi_action_anchor_coef is not None
+        or args.main_fdpi_detach_action_logprob
         or args.buffer_warmup_steps is not None
         or args.save_every_steps is not None
     ):
@@ -686,6 +699,22 @@ def main():
             conf.JointTrainAgent.SaveEverySteps = int(args.save_every_steps)
         if args.main_fdpi_start_step is not None:
             conf.FDPIRegimeDreamer.MainFDPIRegime.StartStep = int(args.main_fdpi_start_step)
+        if args.main_fdpi_lambda_cri is not None:
+            conf.FDPIRegimeDreamer.MainFDPIRegime.LambdaCri = float(args.main_fdpi_lambda_cri)
+        if args.main_fdpi_lambda_inf is not None:
+            conf.FDPIRegimeDreamer.MainFDPIRegime.LambdaInf = float(args.main_fdpi_lambda_inf)
+        if args.main_fdpi_min_reward_weight_cri is not None:
+            conf.FDPIRegimeDreamer.MainFDPIRegime.MinRewardWeightCri = float(
+                args.main_fdpi_min_reward_weight_cri
+            )
+        if args.main_fdpi_min_reward_weight_inf is not None:
+            conf.FDPIRegimeDreamer.MainFDPIRegime.MinRewardWeightInf = float(
+                args.main_fdpi_min_reward_weight_inf
+            )
+        if args.main_fdpi_action_anchor_coef is not None:
+            conf.FDPIRegimeDreamer.MainFDPIRegime.ActionAnchorCoef = float(args.main_fdpi_action_anchor_coef)
+        if args.main_fdpi_detach_action_logprob:
+            conf.FDPIRegimeDreamer.MainFDPIRegime.DetachActionForLogProb = True
         conf.freeze()
     checkpoint_path = os.path.abspath(os.path.expanduser(args.checkpoint_path)) if args.checkpoint_path else None
     if checkpoint_path and not os.path.isfile(checkpoint_path):
