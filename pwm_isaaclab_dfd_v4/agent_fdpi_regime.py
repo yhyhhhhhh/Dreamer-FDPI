@@ -32,6 +32,17 @@ def _weighted_mean(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return (value * weight).sum() / weight.sum().clamp_min(1.0)
 
 
+def _grad_norm_from_loss(loss: torch.Tensor, parameters) -> torch.Tensor:
+    params = [param for param in parameters if param.requires_grad]
+    if not params:
+        return loss.new_tensor(0.0)
+    grads = torch.autograd.grad(loss, params, retain_graph=True, allow_unused=True)
+    grad_norms = [grad.detach().float().norm(2) for grad in grads if grad is not None]
+    if not grad_norms:
+        return loss.new_tensor(0.0)
+    return torch.linalg.vector_norm(torch.stack(grad_norms))
+
+
 def _imagined_reward_action(imagined_action: torch.Tensor | None, fallback_action: torch.Tensor) -> torch.Tensor:
     if imagined_action is None:
         return fallback_action.detach()
@@ -107,6 +118,9 @@ def fdpi_regime_loss_components(
         "loss_fea": loss_fea.detach(),
         "loss_cri": loss_cri.detach(),
         "loss_inf": loss_inf.detach(),
+        "reward_loss_tensor": reward_loss_total,
+        "risk_loss_tensor": risk_loss_total,
+        "entropy_loss_tensor": entropy_loss,
         "reward_loss_total": reward_loss_total.detach(),
         "reward_loss_fea": reward_loss_fea.detach(),
         "reward_loss_cri": reward_loss_cri.detach(),
@@ -212,6 +226,23 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
                 fdpi_actor_loss = fdpi_actor_loss + tail_risk_coef * tail_risk_loss
             total_loss = critic_loss + fdpi_actor_loss
 
+        actor_params = list(self.actor.parameters())
+        reward_grad_norm = _grad_norm_from_loss(metrics["reward_loss_tensor"], actor_params)
+        risk_grad_norm = _grad_norm_from_loss(metrics["risk_loss_tensor"], actor_params)
+        tail_grad_norm = _grad_norm_from_loss(tail_risk_loss, actor_params) if tail_risk_coef > 0.0 else total_loss.new_tensor(0.0)
+        safety_grad_norm = _grad_norm_from_loss(
+            metrics["risk_loss_tensor"] + float(tail_risk_coef) * tail_risk_loss,
+            actor_params,
+        )
+        entropy_grad_norm = _grad_norm_from_loss(metrics["entropy_loss_tensor"], actor_params)
+        reward_grad_norm_value = float(reward_grad_norm.detach().float().item())
+        risk_grad_norm_value = float(risk_grad_norm.detach().float().item())
+        tail_grad_norm_value = float(tail_grad_norm.detach().float().item())
+        safety_grad_norm_value = float(safety_grad_norm.detach().float().item())
+        entropy_grad_norm_value = float(entropy_grad_norm.detach().float().item())
+        safety_to_reward_grad_ratio = safety_grad_norm / reward_grad_norm.clamp_min(1.0e-12)
+        safety_to_reward_grad_ratio_value = float(safety_to_reward_grad_ratio.detach().float().item())
+
         self.scaler.scale(total_loss).backward()
         self.scaler.unscale_(self.optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=100.0)
@@ -235,10 +266,18 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
             logger.log("MainFDPI/tail_risk_coef", tail_risk_coef, step)
             logger.log("MainFDPI/tail_risk_threshold", tail_risk_threshold, step)
             logger.log("MainFDPI/grad_norm", grad_norm_value, step)
+            logger.log("MainFDPI/reward_actor_grad_norm", reward_grad_norm_value, step)
+            logger.log("MainFDPI/risk_actor_grad_norm", risk_grad_norm_value, step)
+            logger.log("MainFDPI/tail_actor_grad_norm", tail_grad_norm_value, step)
+            logger.log("MainFDPI/safety_actor_grad_norm", safety_grad_norm_value, step)
+            logger.log("MainFDPI/entropy_actor_grad_norm", entropy_grad_norm_value, step)
+            logger.log("MainFDPI/safety_to_reward_grad_ratio", safety_to_reward_grad_ratio_value, step)
             logger.log("MainFDPI/detach_action_logprob", float(detach_action_logprob), step)
             logger.log("MainFDPI/reward_action_from_imagination", float(action is not None), step)
             logger.log("MainFDPI/risk_action_resampled", 1.0, step)
             for key, value in metrics.items():
+                if key.endswith("_tensor"):
+                    continue
                 logger.log(f"MainFDPI/{key}", value.detach().float().item(), step)
         return {
             "critic_loss": float(critic_loss.detach().float().item()),
@@ -246,5 +285,11 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
             "action_anchor_loss": float(action_anchor_loss.detach().float().item()),
             "tail_risk_loss": float(tail_risk_loss.detach().float().item()),
             "grad_norm": grad_norm_value,
-            **{key: float(value.detach().float().item()) for key, value in metrics.items()},
+            "reward_actor_grad_norm": reward_grad_norm_value,
+            "risk_actor_grad_norm": risk_grad_norm_value,
+            "tail_actor_grad_norm": tail_grad_norm_value,
+            "safety_actor_grad_norm": safety_grad_norm_value,
+            "entropy_actor_grad_norm": entropy_grad_norm_value,
+            "safety_to_reward_grad_ratio": safety_to_reward_grad_ratio_value,
+            **{key: float(value.detach().float().item()) for key, value in metrics.items() if not key.endswith("_tensor")},
         }

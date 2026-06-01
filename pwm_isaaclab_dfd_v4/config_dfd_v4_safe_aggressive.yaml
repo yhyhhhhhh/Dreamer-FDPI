@@ -125,8 +125,8 @@ FDPIRegimeDreamer:
     GammaCost: 0.97
     RiskMax: 1.0
     TargetTau: 0.005
-    Pf: 0.40
-    Cg: 0.15
+    Pf: 0.35
+    Cg: 0.20
 
   Gp:
     Enable: true
@@ -140,12 +140,12 @@ FDPIRegimeDreamer:
     HighCostThreshold: 0.1
     BoundaryLow: 0.05
     BoundaryHigh: 0.4
-    SafetyCriticalRatio: 0.30
+    SafetyCriticalRatio: 0.45
     HiddenDim: 256
     NumLayers: 2
     LR: 1.0e-4
     Eps: 1.0e-8
-    UpdateSteps: 1
+    UpdateSteps: 2
 
   Gd:
     Enable: true
@@ -159,25 +159,25 @@ FDPIRegimeDreamer:
     HighCostThreshold: 0.1
     BoundaryLow: 0.05
     BoundaryHigh: 0.4
-    SafetyCriticalRatio: 0.55
+    SafetyCriticalRatio: 0.65
     HiddenDim: 256
     NumLayers: 2
     LR: 1.0e-4
     Eps: 1.0e-8
-    UpdateSteps: 1
+    UpdateSteps: 2
 
   MainFDPIRegime:
     Enable: true
     StartStep: 1000000
-    LambdaCri: 0.006
-    LambdaInf: 0.012
-    MinRewardWeightCri: 0.60
-    MinRewardWeightInf: 0.20
+    LambdaCri: 0.025
+    LambdaInf: 0.060
+    MinRewardWeightCri: 0.40
+    MinRewardWeightInf: 0.15
     WarmupSteps: 100000
     EntropyCoef: 1.0e-4
     DetachActionForLogProb: true
-    TailRiskCoef: 0.003
-    TailRiskThreshold: 0.40
+    TailRiskCoef: 0.025
+    TailRiskThreshold: 0.30
 
   DualPolicy:
     LR: 1.0e-4
@@ -188,15 +188,15 @@ FDPIRegimeDreamer:
     Enable: true
     StartStep: 100000
     FeasibleRatioWindow: 10000
-    RatioFea95: 0.25
-    RatioFea90: 0.35
-    RatioFea80: 0.25
-    RatioCriticalHigh: 0.18
-    RatioUnsafeHigh: 0.08
-    RatioDefault: 0.12
-    MaxKLForSampling: 250.0
-    HighMainCostRate: 0.20
-    MaxRatioWhenMainCostHigh: 0.12
+    RatioFea95: 0.35
+    RatioFea90: 0.45
+    RatioFea80: 0.35
+    RatioCriticalHigh: 0.25
+    RatioUnsafeHigh: 0.12
+    RatioDefault: 0.18
+    MaxKLForSampling: 400.0
+    HighMainCostRate: 0.25
+    MaxRatioWhenMainCostHigh: 0.18
 
   DualUpdate:
     Enable: true
@@ -204,15 +204,15 @@ FDPIRegimeDreamer:
     Type: "imagined_risk_return"
     Horizon: 5
     GammaCost: 0.97
-    KLCoeff: 0.8
-    EntropyCoef: 2.0e-4
+    KLCoeff: 0.5
+    EntropyCoef: 3.0e-4
     GradClipNorm: 100.0
-    UpdateSteps: 1
+    UpdateSteps: 2
 
   WorldModelSampling:
     EnableSafetyCriticalSampling: true
-    UniformRatio: 0.70
-    SafetyCriticalRatio: 0.30
+    UniformRatio: 0.55
+    SafetyCriticalRatio: 0.45
     HighCostThreshold: 0.1
     BoundaryLow: 0.05
     BoundaryHigh: 0.4
