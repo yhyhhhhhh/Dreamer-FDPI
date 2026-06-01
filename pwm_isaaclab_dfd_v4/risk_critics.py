@@ -215,8 +215,13 @@ class _DoubleRiskCritic(nn.Module):
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        critic_params = list(self.critic1.parameters()) + list(self.critic2.parameters())
         if self.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(list(self.critic1.parameters()) + list(self.critic2.parameters()), self.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(critic_params, self.max_grad_norm)
+        else:
+            grad_norms = [param.grad.detach().float().norm(2) for param in critic_params if param.grad is not None]
+            grad_norm = torch.linalg.vector_norm(torch.stack(grad_norms)) if grad_norms else loss.new_tensor(0.0)
+        grad_norm_value = float(torch.as_tensor(grad_norm).detach().float().item())
         with torch.no_grad():
             self.optimizer.step()
         self.soft_update_targets()
@@ -250,6 +255,7 @@ class _DoubleRiskCritic(nn.Module):
             "source_main_loss": float(source_main_loss.detach().float().item()),
             "main_action_mean": float(main_action_mean.detach().float().item()),
             "dual_action_mean": float(dual_action_mean.detach().float().item()),
+            "grad_norm": grad_norm_value,
         }
         if logger is not None:
             for key, value in info.items():

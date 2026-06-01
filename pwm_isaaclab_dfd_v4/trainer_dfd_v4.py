@@ -24,7 +24,7 @@ try:
         OfflineEpisodeWriter,
         _extract_force_obs,
         _is_first,
-        _log_info_dict,
+        _log_info_value,
         _policy_obs,
         _reset_after_step,
     )
@@ -33,7 +33,7 @@ except ImportError:
         OfflineEpisodeWriter,
         _extract_force_obs,
         _is_first,
-        _log_info_dict,
+        _log_info_value,
         _policy_obs,
         _reset_after_step,
     )
@@ -303,6 +303,108 @@ def _log_batch_composition(logger, prefix, batch, step, *, high_cost_threshold, 
         logger.log(f"{prefix}/{key}", value, step)
 
 
+_INFO_LOG_KEYWORDS = ("reward", "force")
+_INFO_SKIP_KEYS = {"terminal_observation"}
+
+
+def _should_log_info_key(path):
+    lower_path = str(path).lower()
+    return any(keyword in lower_path for keyword in _INFO_LOG_KEYWORDS)
+
+
+def _numeric_numpy_array(value):
+    if not isinstance(value, np.ndarray):
+        return False
+    return np.issubdtype(value.dtype, np.number) or np.issubdtype(value.dtype, np.bool_)
+
+
+def _mask_info_value(value, mask):
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        masked = {}
+        for key, sub_value in value.items():
+            sub_masked = _mask_info_value(sub_value, mask)
+            if sub_masked is not None:
+                masked[key] = sub_masked
+        return masked or None
+
+    if torch.is_tensor(value):
+        if value.ndim == 0 or value.shape[0] != mask.numel():
+            return None
+        selected = mask.to(device=value.device)
+        if not bool(selected.any().item()):
+            return None
+        return value.detach()[selected]
+
+    if isinstance(value, (list, tuple)):
+        try:
+            value = np.asarray(value)
+        except Exception:
+            return None
+
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0 or value.shape[0] != mask.numel() or not _numeric_numpy_array(value):
+            return None
+        selected = mask.detach().cpu().numpy().astype(bool)
+        if not bool(selected.any()):
+            return None
+        return value[selected]
+
+    return None
+
+
+def _log_reward_force_info_value(logger, tag, value, step):
+    if value is None:
+        return
+
+    if isinstance(value, dict):
+        for key, sub_value in value.items():
+            if key in _INFO_SKIP_KEYS:
+                continue
+            _log_reward_force_info_value(logger, f"{tag}/{key}", sub_value, step)
+        return
+
+    if _should_log_info_key(tag):
+        _log_info_value(logger, tag, value, step)
+
+
+def _log_reward_force_info_value_by_source(logger, tag, value, source_masks, step):
+    if value is None:
+        return
+
+    if isinstance(value, dict):
+        for key, sub_value in value.items():
+            if key in _INFO_SKIP_KEYS:
+                continue
+            _log_reward_force_info_value_by_source(logger, f"{tag}/{key}", sub_value, source_masks, step)
+        return
+
+    if not _should_log_info_key(tag):
+        return
+
+    for prefix, mask in source_masks:
+        masked_value = _mask_info_value(value, mask)
+        if masked_value is not None:
+            _log_info_value(logger, f"{prefix}/{tag}", masked_value, step)
+
+
+def _log_info_dict_reward_force_by_source(logger, info, source, step):
+    if not isinstance(info, dict):
+        return
+    source_mask = source.detach().reshape(-1)
+    source_masks = (
+        ("InfoMain", source_mask == SOURCE_MAIN),
+        ("InfoDual", source_mask == SOURCE_DUAL),
+    )
+    for key, value in info.items():
+        if key in _INFO_SKIP_KEYS:
+            continue
+        _log_reward_force_info_value(logger, f"Info/{key}", value, step)
+        _log_reward_force_info_value_by_source(logger, key, value, source_masks, step)
+
+
 def _module_optimizer_state(module):
     optimizer = getattr(module, "optimizer", None)
     return optimizer.state_dict() if optimizer is not None else None
@@ -548,7 +650,9 @@ def joint_train_dfd_v4(
         next_obs_dict, reward, done, info = vec_env.step(env_action)
         reward = torch.as_tensor(reward, dtype=torch.float32, device=device)
         done = torch.as_tensor(done, dtype=torch.bool, device=device)
-        _log_info_dict(logger, info, env_steps)
+        info_for_log = dict(info) if isinstance(info, dict) else {}
+        info_for_log.setdefault("reward", reward)
+        _log_info_dict_reward_force_by_source(logger, info_for_log, source, env_steps)
 
         cost_parts = extract_continuous_cost(
             info,

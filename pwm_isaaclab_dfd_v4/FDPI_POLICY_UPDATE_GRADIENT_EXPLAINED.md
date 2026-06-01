@@ -1,6 +1,6 @@
 # FDPI 主策略更新梯度问题详解
 
-本文解释 v4 中主策略为什么会在加入 GP 后出现策略崩塌，以及为什么 `DetachActionForLogProb=true` 可以修复这个问题。
+本文解释 v4 中主策略为什么会在加入 GP 后出现策略崩塌，以及为什么 reward 分支必须使用 imagined rollout 中的原始 action，而 GP 分支可以继续使用重新采样的 action。
 
 重点不是调参，而是主策略 actor loss 的梯度路径写错了。
 
@@ -519,7 +519,7 @@ main_action = dist.rsample()
 log_prob = dist.log_prob(main_action)
 ```
 
-修复后是：
+第一版修复是：
 
 ```python
 main_action = dist.rsample()
@@ -527,10 +527,24 @@ log_prob_action = main_action.detach()
 log_prob = dist.log_prob(log_prob_action)
 ```
 
+这会切断 `log_prob(rsample_action)` 的错误 action 梯度，但还不够完整。因为 reward 的 lambda-return 来自 `world_model.imagine_data()` 中已经采样好的 imagined action；如果 reward log_prob 又使用一个重新采样的 action，reward 梯度和产生 reward 的动作就没有严格对齐。
+
+当前正确修复是：
+
+```python
+# reward branch: 和 lambda-return 对齐
+reward_action = imagined_action[:, :T].detach()
+log_prob_reward = dist.log_prob(reward_action)
+
+# risk branch: 允许 GP 通过 action 更新 actor
+risk_action = dist.rsample()
+g = gp_critic.risk(feat[:, :T], risk_action, clamp=False)
+```
+
 注意：
 
 ```text
-main_action.detach()
+reward_action.detach()
 ```
 
 只用于 reward 的 `log_prob`。
@@ -538,7 +552,7 @@ main_action.detach()
 GP 仍然用：
 
 ```python
-g = gp_critic.risk(feat, main_action)
+g = gp_critic.risk(feat, risk_action)
 ```
 
 所以 GP 对 actor 的 action 梯度没有被关掉。
@@ -625,10 +639,11 @@ L_anchor = eta * || main_action - old_imagined_action ||^2
 
 所以 C2 会比原始稳定一些，但不如 detach 修复干净。
 
-真正的根修复仍然是：
+更完整的根修复是：
 
 ```text
-reward log_prob 中的 sampled action 必须 detach
+reward log_prob 使用 imagined rollout 原始 action 并 detach；
+GP risk 使用重新采样 action 并允许对 actor 反传。
 ```
 
 ---
@@ -643,7 +658,7 @@ FDPIRegimeDreamer:
     DetachActionForLogProb: true
 ```
 
-也就是说，正常运行 v4 训练时，会默认使用修复后的公式。
+也就是说，正常运行 v4 训练时，会默认启用 reward action detach；当前代码还进一步让 reward 分支使用 imagined rollout 原始 action，与 lambda-return 对齐。
 
 如果需要做旧行为消融，可以在代码层面把它关掉；但正常训练不建议关闭。
 

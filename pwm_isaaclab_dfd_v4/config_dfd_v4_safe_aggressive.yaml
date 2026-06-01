@@ -20,7 +20,7 @@ JointTrainAgent:
   TrainAgentEverySteps: 256
   ModelUpdate: 4
   AgentUpdate: 4
-  SaveEverySteps: 1000000
+  SaveEverySteps: 250000
   VideoLogStep: 2000
   SaveOfflineEpisodes: False
   OfflineDatasetDir: ""
@@ -126,7 +126,7 @@ FDPIRegimeDreamer:
     RiskMax: 1.0
     TargetTau: 0.005
     Pf: 0.40
-    Cg: 0.10
+    Cg: 0.15
 
   Gp:
     Enable: true
@@ -134,13 +134,13 @@ FDPIRegimeDreamer:
     RiskMax: 1.0
     TargetTau: 0.005
     SourceAwareWeight: true
-    HighCostWeight: 2.0
+    HighCostWeight: 3.0
     DualSourceWeight: 1.0
-    BoundaryWeight: 2.0
+    BoundaryWeight: 3.0
     HighCostThreshold: 0.1
     BoundaryLow: 0.05
     BoundaryHigh: 0.4
-    SafetyCriticalRatio: 0.20
+    SafetyCriticalRatio: 0.30
     HiddenDim: 256
     NumLayers: 2
     LR: 1.0e-4
@@ -153,13 +153,13 @@ FDPIRegimeDreamer:
     RiskMax: 1.0
     TargetTau: 0.005
     SourceAwareWeight: true
-    HighCostWeight: 3.0
-    DualSourceWeight: 2.0
-    BoundaryWeight: 2.0
+    HighCostWeight: 4.0
+    DualSourceWeight: 3.0
+    BoundaryWeight: 3.0
     HighCostThreshold: 0.1
     BoundaryLow: 0.05
     BoundaryHigh: 0.4
-    SafetyCriticalRatio: 0.40
+    SafetyCriticalRatio: 0.55
     HiddenDim: 256
     NumLayers: 2
     LR: 1.0e-4
@@ -169,8 +169,8 @@ FDPIRegimeDreamer:
   MainFDPIRegime:
     Enable: true
     StartStep: 1500000
-    LambdaCri: 0.001
-    LambdaInf: 0.002
+    LambdaCri: 0.002
+    LambdaInf: 0.004
     MinRewardWeightCri: 0.80
     MinRewardWeightInf: 0.80
     WarmupSteps: 100000
@@ -178,7 +178,7 @@ FDPIRegimeDreamer:
     DetachActionForLogProb: true
 
   DualPolicy:
-    LR: 8.0e-5
+    LR: 1.0e-4
     Eps: 1.0e-5
     InitFromMainActor: true
 
@@ -186,15 +186,15 @@ FDPIRegimeDreamer:
     Enable: true
     StartStep: 100000
     FeasibleRatioWindow: 10000
-    RatioFea95: 0.20
+    RatioFea95: 0.25
     RatioFea90: 0.35
-    RatioFea80: 0.20
-    RatioCriticalHigh: 0.15
-    RatioUnsafeHigh: 0.05
-    RatioDefault: 0.10
-    MaxKLForSampling: 200.0
+    RatioFea80: 0.25
+    RatioCriticalHigh: 0.18
+    RatioUnsafeHigh: 0.08
+    RatioDefault: 0.12
+    MaxKLForSampling: 250.0
     HighMainCostRate: 0.20
-    MaxRatioWhenMainCostHigh: 0.10
+    MaxRatioWhenMainCostHigh: 0.12
 
   DualUpdate:
     Enable: true
@@ -202,15 +202,15 @@ FDPIRegimeDreamer:
     Type: "imagined_risk_return"
     Horizon: 5
     GammaCost: 0.97
-    KLCoeff: 1.0
-    EntropyCoef: 1.0e-4
+    KLCoeff: 0.8
+    EntropyCoef: 2.0e-4
     GradClipNorm: 100.0
     UpdateSteps: 1
 
   WorldModelSampling:
     EnableSafetyCriticalSampling: true
-    UniformRatio: 0.80
-    SafetyCriticalRatio: 0.20
+    UniformRatio: 0.70
+    SafetyCriticalRatio: 0.30
     HighCostThreshold: 0.1
     BoundaryLow: 0.05
     BoundaryHigh: 0.4

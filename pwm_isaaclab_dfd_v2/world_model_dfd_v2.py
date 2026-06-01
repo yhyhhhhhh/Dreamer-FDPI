@@ -388,7 +388,7 @@ class DFDV2WorldModelWithContinuousCost(ParallelWorldModel):
 
         self.scaler.scale(total_loss).backward()
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1000.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1000.0)
         with torch.no_grad():
             if self.use_amp:
                 self.scaler.step(self.optimizer)
@@ -412,6 +412,7 @@ class DFDV2WorldModelWithContinuousCost(ParallelWorldModel):
             "vae_ent": float(ent.detach().float().item()),
             "cost_loss": float(cost_loss.detach().float().item()),
             "cost_loss_kind": "continuous_normalized",
+            "grad_norm": float(torch.as_tensor(grad_norm).detach().float().item()),
         }
         for key, value in cost_metrics.items():
             metrics[f"cost/{key}"] = float(value.detach().float().item())
@@ -447,6 +448,7 @@ class DFDV2WorldModelWithContinuousCost(ParallelWorldModel):
             logger.log("WorldModel/rep_loss", metrics["rep_loss"], step)
             logger.log("WorldModel/real_kl", metrics["real_kl"], step)
             logger.log("WorldModel/vae_ent", metrics["vae_ent"], step)
+            logger.log("WorldModel/grad_norm", metrics["grad_norm"], step)
             logger.log("Cost/loss", metrics["cost_loss"], step)
             for key, value in metrics.items():
                 if key.startswith("cost/") and isinstance(value, (int, float)):

@@ -32,6 +32,21 @@ def _weighted_mean(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return (value * weight).sum() / weight.sum().clamp_min(1.0)
 
 
+def _imagined_reward_action(imagined_action: torch.Tensor | None, fallback_action: torch.Tensor) -> torch.Tensor:
+    if imagined_action is None:
+        return fallback_action.detach()
+    reward_action = imagined_action[:, : fallback_action.shape[1]].to(
+        dtype=fallback_action.dtype,
+        device=fallback_action.device,
+    )
+    if reward_action.shape != fallback_action.shape:
+        raise ValueError(
+            "FDPI reward action must align with imagined rollout actions: "
+            f"got {tuple(reward_action.shape)} vs {tuple(fallback_action.shape)}"
+        )
+    return reward_action.detach()
+
+
 def fdpi_regime_loss_components(
     *,
     log_prob: torch.Tensor,
@@ -143,9 +158,9 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
             means, stds, raw_value = self.get_logits_raw_value(feat)
             stds = self.std_scale * torch.sigmoid(stds + 2) + self.std_offset
             dist = Normal(torch.tanh(means[:, :-1]), stds[:, :-1])
-            main_action = dist.rsample()
-            log_prob_action = main_action.detach() if detach_action_logprob else main_action
-            log_prob = dist.log_prob(log_prob_action)[..., None]
+            risk_action = dist.rsample()
+            reward_action = _imagined_reward_action(action, risk_action)
+            log_prob = dist.log_prob(reward_action)[..., None]
             entropy = dist.entropy()[..., None]
 
             with torch.no_grad():
@@ -162,7 +177,7 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
 
             critic_loss = torch.mean(self.twohot_loss(raw_value[:, :-1], lambda_return, reduce=False) * weight)
             with temporarily_disable_grads(gp_critic):
-                g = gp_critic.risk(feat[:, :-1], main_action, clamp=True)
+                g = gp_critic.risk(feat[:, :-1], risk_action, clamp=False)
             fdpi_actor_loss, metrics = fdpi_regime_loss_components(
                 log_prob=log_prob,
                 entropy=entropy,
@@ -180,16 +195,17 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
             )
             action_anchor_loss = torch.zeros((), dtype=fdpi_actor_loss.dtype, device=fdpi_actor_loss.device)
             if action_anchor_coef > 0.0 and action is not None:
-                anchor_len = min(int(main_action.shape[1]), int(action.shape[1]), int(weight.shape[1]))
-                anchor_action = action[:, :anchor_len].detach().to(dtype=main_action.dtype, device=main_action.device)
-                anchor_error = (main_action[:, :anchor_len] - anchor_action).square().mean(dim=-1, keepdim=True)
+                anchor_len = min(int(risk_action.shape[1]), int(action.shape[1]), int(weight.shape[1]))
+                anchor_action = action[:, :anchor_len].detach().to(dtype=risk_action.dtype, device=risk_action.device)
+                anchor_error = (risk_action[:, :anchor_len] - anchor_action).square().mean(dim=-1, keepdim=True)
                 action_anchor_loss = _weighted_mean(anchor_error, weight[:, :anchor_len])
                 fdpi_actor_loss = fdpi_actor_loss + action_anchor_coef * action_anchor_loss
             total_loss = critic_loss + fdpi_actor_loss
 
         self.scaler.scale(total_loss).backward()
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=100.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=100.0)
+        grad_norm_value = float(torch.as_tensor(grad_norm).detach().float().item())
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
@@ -202,14 +218,19 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
             logger.log("ActorCritic/scale", self.get_scale(), step)
             logger.log("ActorCritic/lambda_return", lambda_return.mean().detach().float().item(), step)
             logger.log("ActorCritic/norm_adv", norm_adv.mean().detach().float().item(), step)
+            logger.log("ActorCritic/grad_norm", grad_norm_value, step)
             logger.log("MainFDPI/action_anchor_loss", action_anchor_loss.detach().float().item(), step)
             logger.log("MainFDPI/action_anchor_coef", action_anchor_coef, step)
+            logger.log("MainFDPI/grad_norm", grad_norm_value, step)
             logger.log("MainFDPI/detach_action_logprob", float(detach_action_logprob), step)
+            logger.log("MainFDPI/reward_action_from_imagination", float(action is not None), step)
+            logger.log("MainFDPI/risk_action_resampled", 1.0, step)
             for key, value in metrics.items():
                 logger.log(f"MainFDPI/{key}", value.detach().float().item(), step)
         return {
             "critic_loss": float(critic_loss.detach().float().item()),
             "fdpi_actor_loss": float(fdpi_actor_loss.detach().float().item()),
             "action_anchor_loss": float(action_anchor_loss.detach().float().item()),
+            "grad_norm": grad_norm_value,
             **{key: float(value.detach().float().item()) for key, value in metrics.items()},
         }

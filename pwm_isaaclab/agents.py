@@ -149,7 +149,7 @@ class ActorCriticAgent(nn.Module):
 
         self.scaler.scale(total_loss).backward()
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=100.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=100.0)
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
@@ -162,4 +162,5 @@ class ActorCriticAgent(nn.Module):
             logger.log("ActorCritic/scale", self.get_scale(), step)
             logger.log("ActorCritic/lambda_return", lambda_return.mean().item(), step)
             logger.log("ActorCritic/norm_adv", norm_adv.mean().item(), step)
+            logger.log("ActorCritic/grad_norm", float(torch.as_tensor(grad_norm).detach().float().item()), step)
             logger.log("ActorCritic/use_slow_critic", float(self.use_slow_critic), step)
