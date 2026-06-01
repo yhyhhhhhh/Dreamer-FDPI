@@ -1,0 +1,381 @@
+{
+  "checkpoint_path": "/home/yhy/PaMoRL-IsaacLab-clean/ckpt/dfd-v4-fixed-continue-full/20260601_085833_DFD-v4-fixed-continue-to-original-10M-ta/full_state_v4_2249856.pth",
+  "config_path": "/home/yhy/PaMoRL-IsaacLab-clean/pwm_isaaclab_dfd_v4/config_dfd_v4.yaml",
+  "env_name": "Ur3Lite-HeadPipe-GraspGoalDreamerForce-OSC-RL-Direct-v1",
+  "device": "cuda:0",
+  "policy": "main",
+  "greedy": true,
+  "gp_shield": true,
+  "shield_threshold": 0.4,
+  "shield_candidates": 4,
+  "shield_min_improvement": 0.0,
+  "seed": 0,
+  "num_envs": 1,
+  "eval_steps_requested": 2,
+  "env_steps": 2,
+  "config": null,
+  "summary": {
+    "env_steps": 2,
+    "episodes_completed": 0,
+    "success_rate": 0.0,
+    "failure_rate": 0.0,
+    "timeout_rate": 0.0,
+    "episode_return_mean": null,
+    "episode_return": {
+      "count": 0,
+      "mean": null,
+      "std": null,
+      "min": null,
+      "max": null
+    },
+    "episode_length": {
+      "count": 0,
+      "mean": null,
+      "std": null,
+      "min": null,
+      "max": null
+    },
+    "episode_cost_mean": null,
+    "episode_cost": {
+      "count": 0,
+      "mean": null,
+      "std": null,
+      "min": null,
+      "max": null
+    },
+    "episode_bottom_force_mean": null,
+    "episode_bottom_force_peak": {
+      "count": 0,
+      "mean": null,
+      "std": null,
+      "min": null,
+      "max": null
+    },
+    "continuous_cost_mean": 0.0,
+    "cost_positive_rate": 0.0,
+    "high_cost_rate": 0.0,
+    "extreme_cost_rate": 0.0,
+    "bottom_force_mean": 0.0,
+    "bottom_force_max": 0.0,
+    "force_excess_mean": 0.0,
+    "gp_mean": 0.1356898434460163,
+    "gp_pre_shield_mean": 0.1356898434460163,
+    "gd_mean": 0.0,
+    "shield_applied_rate": 0.0,
+    "gp_feasible_ratio": 1.0,
+    "gp_critical_ratio": 0.0,
+    "gp_infeasible_ratio": 0.0
+  },
+  "step_stats": {
+    "reward": {
+      "count": 2,
+      "mean": 0.06593085080385208,
+      "std": 0.00047738105058670044,
+      "min": 0.06545346975326538,
+      "max": 0.06640823185443878
+    },
+    "continuous_cost": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "binary_cost": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "high_cost": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "extreme_cost": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "bottom_force": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "force_excess": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "gp_pre_shield": {
+      "count": 2,
+      "mean": 0.1356898434460163,
+      "std": 0.022452961653470993,
+      "min": 0.11323688179254532,
+      "max": 0.1581428050994873
+    },
+    "gp": {
+      "count": 2,
+      "mean": 0.1356898434460163,
+      "std": 0.022452961653470993,
+      "min": 0.11323688179254532,
+      "max": 0.1581428050994873
+    },
+    "gd": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "shield_applied": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "gp_feasible": {
+      "count": 2,
+      "mean": 1.0,
+      "std": 0.0,
+      "min": 1.0,
+      "max": 1.0
+    },
+    "gp_critical": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "gp_infeasible": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    }
+  },
+  "info_stats": {
+    "Info/log/reward/approach": {
+      "count": 2,
+      "mean": 0.05879615806043148,
+      "std": 0.0004915576428174973,
+      "min": 0.05830460041761398,
+      "max": 0.05928771570324898
+    },
+    "Info/log/reward/approach_fine": {
+      "count": 2,
+      "mean": 1.8519166644637153e-07,
+      "std": 7.736943530289864e-09,
+      "min": 1.7745472291608166e-07,
+      "max": 1.929286099766614e-07
+    },
+    "Info/log/reward/contact": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/reward/lift": {
+      "count": 2,
+      "mean": 0.0011628406355157495,
+      "std": 2.3137545213103294e-06,
+      "min": 0.0011605268809944391,
+      "max": 0.0011651543900370598
+    },
+    "Info/log/reward/goal": {
+      "count": 2,
+      "mean": 0.005971662933006883,
+      "std": 1.1869007721543312e-05,
+      "min": 0.005959793925285339,
+      "max": 0.005983531940728426
+    },
+    "Info/log/reward/pipe_constraint": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/reward/object_outside": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/reward/success": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/reward/total": {
+      "count": 2,
+      "mean": 0.06593085080385208,
+      "std": 0.00047738105058670044,
+      "min": 0.06545346975326538,
+      "max": 0.06640823185443878
+    },
+    "Info/log/contact/bilateral": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/contact/strength": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/contact/left_force": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/contact/right_force": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/object/lift_height": {
+      "count": 2,
+      "mean": 3.876135451719165e-06,
+      "std": 7.712515071034431e-09,
+      "min": 3.86842293664813e-06,
+      "max": 3.883847966790199e-06
+    },
+    "Info/log/object/goal_distance": {
+      "count": 2,
+      "mean": 0.012121063191443682,
+      "std": 2.0023435354232788e-08,
+      "min": 0.012121043168008327,
+      "max": 0.012121083214879036
+    },
+    "Info/log/success/success_rate": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/success/hold_steps_mean": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/failure/rate": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/failure/lift_height_limit": {
+      "count": 2,
+      "mean": -0.0010000000474974513,
+      "std": 0.0,
+      "min": -0.0010000000474974513,
+      "max": -0.0010000000474974513
+    },
+    "Info/log/force/left_object": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/left_wall": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/left_bottom": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/right_object": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/right_wall": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/right_bottom": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/max": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/episode_success": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/episode_failure": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/episode_timeout": {
+      "count": 2,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/reward": {
+      "count": 2,
+      "mean": 0.06593085080385208,
+      "std": 0.00047738105058670044,
+      "min": 0.06545346975326538,
+      "max": 0.06640823185443878
+    }
+  }
+}

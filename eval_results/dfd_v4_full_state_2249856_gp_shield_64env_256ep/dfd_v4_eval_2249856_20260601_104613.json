@@ -1,0 +1,381 @@
+{
+  "checkpoint_path": "/home/yhy/PaMoRL-IsaacLab-clean/ckpt/dfd-v4-fixed-continue-full/20260601_085833_DFD-v4-fixed-continue-to-original-10M-ta/full_state_v4_2249856.pth",
+  "config_path": "/home/yhy/PaMoRL-IsaacLab-clean/pwm_isaaclab_dfd_v4/config_dfd_v4.yaml",
+  "env_name": "Ur3Lite-HeadPipe-GraspGoalDreamerForce-OSC-RL-Direct-v1",
+  "device": "cuda:0",
+  "policy": "main",
+  "greedy": true,
+  "gp_shield": true,
+  "shield_threshold": 0.4,
+  "shield_candidates": 32,
+  "shield_min_improvement": 0.0,
+  "seed": 0,
+  "num_envs": 64,
+  "eval_steps_requested": 200000,
+  "env_steps": 53056,
+  "config": null,
+  "summary": {
+    "env_steps": 53056,
+    "episodes_completed": 256,
+    "success_rate": 0.8359375,
+    "failure_rate": 0.00390625,
+    "timeout_rate": 0.16015625,
+    "episode_return_mean": 763.4987528920174,
+    "episode_return": {
+      "count": 256,
+      "mean": 763.4987528920174,
+      "std": 272.6421286830176,
+      "min": 190.42677307128906,
+      "max": 2436.495361328125
+    },
+    "episode_length": {
+      "count": 256,
+      "mean": 181.91015625,
+      "std": 62.36175127312082,
+      "min": 126.0,
+      "max": 299.0
+    },
+    "episode_cost_mean": 0.0019391174509804233,
+    "episode_cost": {
+      "count": 256,
+      "mean": 0.3840148531089653,
+      "std": 1.2789103068598635,
+      "min": 0.0,
+      "max": 17.809185028076172
+    },
+    "episode_bottom_force_mean": 0.01098582560490513,
+    "episode_bottom_force_peak": {
+      "count": 256,
+      "mean": 1.3408441323554143,
+      "std": 3.164813434781276,
+      "min": 0.0,
+      "max": 19.712858200073242
+    },
+    "continuous_cost_mean": 0.00193756494019658,
+    "cost_positive_rate": 0.0030156815440289505,
+    "high_cost_rate": 0.0029402895054282266,
+    "extreme_cost_rate": 0.0008858564535585042,
+    "bottom_force_mean": 0.011480717575848448,
+    "bottom_force_max": 19.712858200073242,
+    "force_excess_mean": 0.011160171994056431,
+    "gp_mean": 0.24721687634849632,
+    "gp_pre_shield_mean": 0.2520247527914385,
+    "gd_mean": 0.44068681705821083,
+    "shield_applied_rate": 0.22513947527141134,
+    "gp_feasible_ratio": 0.6758519300361882,
+    "gp_critical_ratio": 0.11612258745476478,
+    "gp_infeasible_ratio": 0.20802548250904704
+  },
+  "step_stats": {
+    "reward": {
+      "count": 53056,
+      "mean": 3.8376941685957315,
+      "std": 8.802274500067139,
+      "min": 0.05856432393193245,
+      "max": 45.46465301513672
+    },
+    "continuous_cost": {
+      "count": 53056,
+      "mean": 0.00193756494019658,
+      "std": 0.03741069597222963,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "binary_cost": {
+      "count": 53056,
+      "mean": 0.0030156815440289505,
+      "std": 0.0548323554924823,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "high_cost": {
+      "count": 53056,
+      "mean": 0.0029402895054282266,
+      "std": 0.054144659968019884,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "extreme_cost": {
+      "count": 53056,
+      "mean": 0.0008858564535585042,
+      "std": 0.029750154821482744,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "bottom_force": {
+      "count": 53056,
+      "mean": 0.011480717575848448,
+      "std": 0.30096296141290946,
+      "min": 0.0,
+      "max": 19.712858200073242
+    },
+    "force_excess": {
+      "count": 53056,
+      "mean": 0.011160171994056431,
+      "std": 0.2971912202333511,
+      "min": 0.0,
+      "max": 19.612857818603516
+    },
+    "gp_pre_shield": {
+      "count": 53056,
+      "mean": 0.2520247527914385,
+      "std": 0.16693834771293567,
+      "min": 0.07649287581443787,
+      "max": 1.0
+    },
+    "gp": {
+      "count": 53056,
+      "mean": 0.24721687634849632,
+      "std": 0.15887025699885,
+      "min": 0.07649287581443787,
+      "max": 1.0
+    },
+    "gd": {
+      "count": 53056,
+      "mean": 0.44068681705821083,
+      "std": 0.35298404033422326,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "shield_applied": {
+      "count": 53056,
+      "mean": 0.22513947527141134,
+      "std": 0.41767414565175676,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "gp_feasible": {
+      "count": 53056,
+      "mean": 0.6758519300361882,
+      "std": 0.46805565769740204,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "gp_critical": {
+      "count": 53056,
+      "mean": 0.11612258745476478,
+      "std": 0.32037186539640977,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "gp_infeasible": {
+      "count": 53056,
+      "mean": 0.20802548250904704,
+      "std": 0.40589516027654876,
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+  "info_stats": {
+    "Info/log/reward/approach": {
+      "count": 829,
+      "mean": 0.7621386573392678,
+      "std": 0.22823048657306647,
+      "min": 0.05953707918524742,
+      "max": 1.3193464279174805
+    },
+    "Info/log/reward/approach_fine": {
+      "count": 829,
+      "mean": 0.409285997470582,
+      "std": 0.20380945438620957,
+      "min": 1.9727960420823365e-07,
+      "max": 1.0770576000213623
+    },
+    "Info/log/reward/contact": {
+      "count": 829,
+      "mean": 0.30058360095298764,
+      "std": 0.19425808425235083,
+      "min": 0.0,
+      "max": 1.1451442241668701
+    },
+    "Info/log/reward/lift": {
+      "count": 829,
+      "mean": 0.30839296127346527,
+      "std": 0.2012094272064426,
+      "min": 0.0009160179179161787,
+      "max": 1.3266445398330688
+    },
+    "Info/log/reward/goal": {
+      "count": 829,
+      "mean": 0.8308529647132348,
+      "std": 0.5003660261235572,
+      "min": 0.005257605575025082,
+      "max": 3.2568929195404053
+    },
+    "Info/log/reward/pipe_constraint": {
+      "count": 829,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/reward/object_outside": {
+      "count": 829,
+      "mean": -0.0005520620615801811,
+      "std": 0.0007732767737820378,
+      "min": -0.006207131315022707,
+      "max": 0.0
+    },
+    "Info/log/reward/success": {
+      "count": 829,
+      "mean": 1.2264399879372738,
+      "std": 1.1667484617956059,
+      "min": 0.0,
+      "max": 8.90625
+    },
+    "Info/log/reward/total": {
+      "count": 829,
+      "mean": 3.8376941678571472,
+      "std": 2.2078853911699436,
+      "min": 0.06835805624723434,
+      "max": 16.938068389892578
+    },
+    "Info/log/contact/bilateral": {
+      "count": 829,
+      "mean": 0.18806544028950542,
+      "std": 0.11990732520934333,
+      "min": 0.0,
+      "max": 0.703125
+    },
+    "Info/log/contact/strength": {
+      "count": 829,
+      "mean": 0.18072379630764518,
+      "std": 0.11546299414647156,
+      "min": 0.0,
+      "max": 0.6926931142807007
+    },
+    "Info/log/contact/left_force": {
+      "count": 829,
+      "mean": 0.09731418493375703,
+      "std": 0.06320339793613253,
+      "min": 0.0,
+      "max": 0.4320870339870453
+    },
+    "Info/log/contact/right_force": {
+      "count": 829,
+      "mean": 0.0947920469245879,
+      "std": 0.05934423510975203,
+      "min": 0.0,
+      "max": 0.3213920593261719
+    },
+    "Info/log/object/lift_height": {
+      "count": 829,
+      "mean": 0.0010441928649928668,
+      "std": 0.0006838502175123008,
+      "min": -2.8905094495712547e-06,
+      "max": 0.004531971178948879
+    },
+    "Info/log/object/goal_distance": {
+      "count": 829,
+      "mean": 0.010303738720791438,
+      "std": 0.0007035999313287339,
+      "min": 0.006506561301648617,
+      "max": 0.011180336587131023
+    },
+    "Info/log/success/success_rate": {
+      "count": 829,
+      "mean": 0.04088133293124246,
+      "std": 0.03889161539318687,
+      "min": 0.0,
+      "max": 0.296875
+    },
+    "Info/log/success/hold_steps_mean": {
+      "count": 829,
+      "mean": 0.19324864294330518,
+      "std": 0.19528048326977682,
+      "min": 0.0,
+      "max": 1.59375
+    },
+    "Info/log/failure/rate": {
+      "count": 829,
+      "mean": 1.884800965018094e-05,
+      "std": 0.0005423512729922406,
+      "min": 0.0,
+      "max": 0.015625
+    },
+    "Info/log/failure/lift_height_limit": {
+      "count": 829,
+      "mean": -0.0010000000474974513,
+      "std": 0.0,
+      "min": -0.0010000000474974513,
+      "max": -0.0010000000474974513
+    },
+    "Info/log/force/left_object": {
+      "count": 829,
+      "mean": 0.09731418493375703,
+      "std": 0.06320339793613253,
+      "min": 0.0,
+      "max": 0.4320870339870453
+    },
+    "Info/log/force/left_wall": {
+      "count": 829,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/left_bottom": {
+      "count": 829,
+      "mean": 0.010623824665560857,
+      "std": 0.03607796050010955,
+      "min": 0.0,
+      "max": 0.4007567763328552
+    },
+    "Info/log/force/right_object": {
+      "count": 829,
+      "mean": 0.0947920469245879,
+      "std": 0.05934423510975203,
+      "min": 0.0,
+      "max": 0.3213920593261719
+    },
+    "Info/log/force/right_wall": {
+      "count": 829,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "Info/log/force/right_bottom": {
+      "count": 829,
+      "mean": 0.0010049483194485653,
+      "std": 0.013318782816714851,
+      "min": 0.0,
+      "max": 0.2862905263900757
+    },
+    "Info/log/force/max": {
+      "count": 829,
+      "mean": 0.13226089306148747,
+      "std": 0.08875636946419346,
+      "min": 0.0,
+      "max": 0.5308197736740112
+    },
+    "Info/episode_success": {
+      "count": 53056,
+      "mean": 0.004033474065138721,
+      "std": 0.06338142592356671,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Info/episode_failure": {
+      "count": 53056,
+      "mean": 1.884800965018094e-05,
+      "std": 0.004341388533950073,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Info/episode_timeout": {
+      "count": 53056,
+      "mean": 0.0007727683956574186,
+      "std": 0.027787969063321122,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Info/reward": {
+      "count": 53056,
+      "mean": 3.8376941685957315,
+      "std": 8.802274500067139,
+      "min": 0.05856432393193245,
+      "max": 45.46465301513672
+    }
+  }
+}

@@ -176,6 +176,8 @@ FDPIRegimeDreamer:
     WarmupSteps: 100000
     EntropyCoef: 1.0e-4
     DetachActionForLogProb: true
+    TailRiskCoef: 0.0
+    TailRiskThreshold: 0.40
 
   DualPolicy:
     LR: 8.0e-5

@@ -219,6 +219,8 @@ def load_dfd_v4_config(config_path):
     _set_default(main, "WarmupSteps", 100000)
     _set_default(main, "EntropyCoef", 1.0e-4)
     _set_default(main, "DetachActionForLogProb", True)
+    _set_default(main, "TailRiskCoef", 0.0)
+    _set_default(main, "TailRiskThreshold", risk.Pf)
 
     dual_policy = _ensure_node(fdpi, "DualPolicy")
     _set_default(dual_policy, "LR", 8.0e-5)

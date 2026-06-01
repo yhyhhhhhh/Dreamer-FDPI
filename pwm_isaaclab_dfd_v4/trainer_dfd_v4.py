@@ -146,6 +146,8 @@ def _main_fdpi_cfg(fdpi_cfg):
         "MinRewardWeightInf": _cfg_float(main_cfg, "MinRewardWeightInf", 0.80),
         "EntropyCoef": _cfg_float(main_cfg, "EntropyCoef", 1.0e-4),
         "ActionAnchorCoef": _cfg_float(main_cfg, "ActionAnchorCoef", 0.0),
+        "TailRiskCoef": _cfg_float(main_cfg, "TailRiskCoef", 0.0),
+        "TailRiskThreshold": _cfg_float(main_cfg, "TailRiskThreshold", _cfg_float(risk_cfg, "Pf", 0.40)),
         "DetachActionForLogProb": _cfg_bool(main_cfg, "DetachActionForLogProb", False),
     }
 
@@ -403,6 +405,37 @@ def _log_info_dict_reward_force_by_source(logger, info, source, step):
             continue
         _log_reward_force_info_value(logger, f"Info/{key}", value, step)
         _log_reward_force_info_value_by_source(logger, key, value, source_masks, step)
+
+
+def _extract_left_right_bottom_force(obs_dict, *, num_envs, device, force_key="", bottom_force_channels=(2, 5)):
+    if not isinstance(obs_dict, dict):
+        return None, None
+    candidate_keys = tuple(key for key in (force_key, "force") if key)
+    for key in candidate_keys:
+        value = obs_dict.get(key)
+        if value is None:
+            continue
+        force = torch.as_tensor(value, dtype=torch.float32, device=device)
+        if force.ndim == 0 or force.shape[0] != num_envs:
+            continue
+        force = torch.nan_to_num(force.reshape(num_envs, -1).abs(), nan=0.0, posinf=1.0e6)
+        if len(bottom_force_channels) >= 2 and force.shape[-1] > max(bottom_force_channels[:2]):
+            left_idx = int(bottom_force_channels[0])
+            right_idx = int(bottom_force_channels[1])
+            return force[:, left_idx], force[:, right_idx]
+    return None, None
+
+
+def _log_bottom_side_info_by_source(logger, source, leftbottom, rightbottom, step):
+    source_mask = source.detach().reshape(-1)
+    for prefix, mask in (("InfoMain", source_mask == SOURCE_MAIN), ("InfoDual", source_mask == SOURCE_DUAL)):
+        mask = mask.to(device=source.device)
+        if not bool(mask.any().item()):
+            continue
+        if leftbottom is not None:
+            logger.log(f"{prefix}/leftbottom", leftbottom.to(device=source.device)[mask].float().mean().item(), step)
+        if rightbottom is not None:
+            logger.log(f"{prefix}/rightbottom", rightbottom.to(device=source.device)[mask].float().mean().item(), step)
 
 
 def _module_optimizer_state(module):
@@ -675,6 +708,14 @@ def joint_train_dfd_v4(
         extreme_cost = cost_parts["extreme_cost"]
         bottom_force = cost_parts["bottom_force"]
         force_excess = cost_parts["force_excess"]
+        leftbottom, rightbottom = _extract_left_right_bottom_force(
+            next_obs_dict,
+            num_envs=num_envs,
+            device=device,
+            force_key=getattr(replay_buffer, "force_key", ""),
+            bottom_force_channels=bottom_channels,
+        )
+        _log_bottom_side_info_by_source(logger, source, leftbottom, rightbottom, env_steps)
 
         if g_main_for_window is not None:
             feasible_window.append(

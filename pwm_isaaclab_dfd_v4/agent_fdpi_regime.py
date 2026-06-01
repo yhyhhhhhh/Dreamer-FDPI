@@ -152,6 +152,8 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
         min_reward_weight_cri = float(cfg_get(cfg, "MinRewardWeightCri", 0.80))
         min_reward_weight_inf = float(cfg_get(cfg, "MinRewardWeightInf", 0.80))
         action_anchor_coef = float(cfg_get(cfg, "ActionAnchorCoef", 0.0))
+        tail_risk_coef = float(cfg_get(cfg, "TailRiskCoef", 0.0))
+        tail_risk_threshold = float(cfg_get(cfg, "TailRiskThreshold", pf))
         detach_action_logprob = bool(cfg_get(cfg, "DetachActionForLogProb", False))
 
         with torch.autocast(device_type=self.device_type, dtype=self.tensor_dtype, enabled=self.use_amp):
@@ -200,6 +202,14 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
                 anchor_error = (risk_action[:, :anchor_len] - anchor_action).square().mean(dim=-1, keepdim=True)
                 action_anchor_loss = _weighted_mean(anchor_error, weight[:, :anchor_len])
                 fdpi_actor_loss = fdpi_actor_loss + action_anchor_coef * action_anchor_loss
+            tail_risk_loss = torch.zeros((), dtype=fdpi_actor_loss.dtype, device=fdpi_actor_loss.device)
+            if tail_risk_coef > 0.0:
+                tail_den = max(float(risk_max) - float(tail_risk_threshold), 1.0e-6)
+                tail_margin = torch.relu(g - float(tail_risk_threshold)) / tail_den
+                tail_risk_per_seq = tail_margin.amax(dim=1)
+                tail_weight = weight.detach().amax(dim=1)
+                tail_risk_loss = _weighted_mean(tail_risk_per_seq, tail_weight)
+                fdpi_actor_loss = fdpi_actor_loss + tail_risk_coef * tail_risk_loss
             total_loss = critic_loss + fdpi_actor_loss
 
         self.scaler.scale(total_loss).backward()
@@ -221,6 +231,9 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
             logger.log("ActorCritic/grad_norm", grad_norm_value, step)
             logger.log("MainFDPI/action_anchor_loss", action_anchor_loss.detach().float().item(), step)
             logger.log("MainFDPI/action_anchor_coef", action_anchor_coef, step)
+            logger.log("MainFDPI/tail_risk_loss", tail_risk_loss.detach().float().item(), step)
+            logger.log("MainFDPI/tail_risk_coef", tail_risk_coef, step)
+            logger.log("MainFDPI/tail_risk_threshold", tail_risk_threshold, step)
             logger.log("MainFDPI/grad_norm", grad_norm_value, step)
             logger.log("MainFDPI/detach_action_logprob", float(detach_action_logprob), step)
             logger.log("MainFDPI/reward_action_from_imagination", float(action is not None), step)
@@ -231,6 +244,7 @@ class FDPIRegimeActorCriticAgent(CostAwareActorCriticAgent):
             "critic_loss": float(critic_loss.detach().float().item()),
             "fdpi_actor_loss": float(fdpi_actor_loss.detach().float().item()),
             "action_anchor_loss": float(action_anchor_loss.detach().float().item()),
+            "tail_risk_loss": float(tail_risk_loss.detach().float().item()),
             "grad_norm": grad_norm_value,
             **{key: float(value.detach().float().item()) for key, value in metrics.items()},
         }

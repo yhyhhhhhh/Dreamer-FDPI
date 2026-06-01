@@ -168,14 +168,16 @@ FDPIRegimeDreamer:
 
   MainFDPIRegime:
     Enable: true
-    StartStep: 1500000
-    LambdaCri: 0.002
-    LambdaInf: 0.004
-    MinRewardWeightCri: 0.80
-    MinRewardWeightInf: 0.80
+    StartStep: 1000000
+    LambdaCri: 0.006
+    LambdaInf: 0.012
+    MinRewardWeightCri: 0.60
+    MinRewardWeightInf: 0.20
     WarmupSteps: 100000
     EntropyCoef: 1.0e-4
     DetachActionForLogProb: true
+    TailRiskCoef: 0.003
+    TailRiskThreshold: 0.40
 
   DualPolicy:
     LR: 1.0e-4
